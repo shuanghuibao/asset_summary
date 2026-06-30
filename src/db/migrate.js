@@ -14,6 +14,23 @@ async function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_users_email_lower
     ON admin_users (lower(email));
   `);
+  await pool.query(`
+    ALTER TABLE admin_users
+    ADD COLUMN IF NOT EXISTS is_admin BOOLEAN;
+  `);
+  await pool.query(`
+    UPDATE admin_users
+    SET is_admin = TRUE
+    WHERE is_admin IS NULL;
+  `);
+  await pool.query(`
+    ALTER TABLE admin_users
+    ALTER COLUMN is_admin SET DEFAULT FALSE;
+  `);
+  await pool.query(`
+    ALTER TABLE admin_users
+    ALTER COLUMN is_admin SET NOT NULL;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS members (
@@ -26,6 +43,10 @@ async function migrate() {
   await pool.query(`
     ALTER TABLE members
     ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+  `);
+  await pool.query(`
+    ALTER TABLE members
+    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES admin_users(id) ON DELETE CASCADE;
   `);
 
   await pool.query(`
@@ -55,6 +76,10 @@ async function migrate() {
   `);
   await pool.query(`
     ALTER TABLE tracking_items
+    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES admin_users(id) ON DELETE CASCADE;
+  `);
+  await pool.query(`
+    ALTER TABLE tracking_items
     DROP CONSTRAINT IF EXISTS tracking_items_asset_group_check;
   `);
   await pool.query(`
@@ -69,7 +94,7 @@ async function migrate() {
       SELECT
         id,
         ROW_NUMBER() OVER (
-          PARTITION BY lower(btrim(name)), kind, COALESCE(owner_member_id, 0)
+          PARTITION BY user_id, lower(btrim(name)), kind, COALESCE(owner_member_id, 0)
           ORDER BY id ASC
         ) AS rn
       FROM tracking_items
@@ -82,8 +107,11 @@ async function migrate() {
       AND r.rn > 1;
   `);
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_items_active_name_owner_kind
-    ON tracking_items (lower(btrim(name)), kind, COALESCE(owner_member_id, 0))
+    DROP INDEX IF EXISTS uq_tracking_items_active_name_owner_kind;
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_items_user_active_name_owner_kind
+    ON tracking_items (user_id, lower(btrim(name)), kind, COALESCE(owner_member_id, 0))
     WHERE is_active = TRUE;
   `);
 
@@ -100,6 +128,10 @@ async function migrate() {
     ALTER TABLE snapshot_periods
     ADD COLUMN IF NOT EXISTS stock_pnl_manual NUMERIC(14,2) NOT NULL DEFAULT 0;
   `);
+  await pool.query(`
+    ALTER TABLE snapshot_periods
+    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES admin_users(id) ON DELETE CASCADE;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS snapshot_values (
@@ -110,6 +142,89 @@ async function migrate() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       UNIQUE (period_id, item_id)
     );
+  `);
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION ensure_snapshot_value_same_user()
+    RETURNS trigger AS $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM snapshot_periods p
+        JOIN tracking_items i ON i.id = NEW.item_id
+        WHERE p.id = NEW.period_id
+          AND p.user_id = i.user_id
+      ) THEN
+        RAISE EXCEPTION 'snapshot period and item must belong to the same user';
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+  await pool.query(`
+    DROP TRIGGER IF EXISTS trg_snapshot_values_same_user ON snapshot_values;
+  `);
+  await pool.query(`
+    CREATE TRIGGER trg_snapshot_values_same_user
+    BEFORE INSERT OR UPDATE ON snapshot_values
+    FOR EACH ROW
+    EXECUTE FUNCTION ensure_snapshot_value_same_user();
+  `);
+
+  await pool.query(`
+    DO $$
+    DECLARE
+      first_admin_id INTEGER;
+      orphan_count INTEGER;
+    BEGIN
+      SELECT id INTO first_admin_id FROM admin_users ORDER BY id ASC LIMIT 1;
+
+      SELECT
+        (SELECT COUNT(*) FROM members WHERE user_id IS NULL) +
+        (SELECT COUNT(*) FROM tracking_items WHERE user_id IS NULL) +
+        (SELECT COUNT(*) FROM snapshot_periods WHERE user_id IS NULL)
+      INTO orphan_count;
+
+      IF orphan_count > 0 AND first_admin_id IS NULL THEN
+        RAISE EXCEPTION 'Cannot assign existing asset data because no admin user exists';
+      END IF;
+
+      IF first_admin_id IS NOT NULL THEN
+        UPDATE members SET user_id = first_admin_id WHERE user_id IS NULL;
+        UPDATE tracking_items SET user_id = first_admin_id WHERE user_id IS NULL;
+        UPDATE snapshot_periods SET user_id = first_admin_id WHERE user_id IS NULL;
+      END IF;
+    END $$;
+  `);
+
+  await pool.query(`
+    ALTER TABLE members
+    ALTER COLUMN user_id SET NOT NULL;
+  `);
+  await pool.query(`
+    ALTER TABLE tracking_items
+    ALTER COLUMN user_id SET NOT NULL;
+  `);
+  await pool.query(`
+    ALTER TABLE snapshot_periods
+    ALTER COLUMN user_id SET NOT NULL;
+  `);
+
+  await pool.query(`
+    ALTER TABLE members
+    DROP CONSTRAINT IF EXISTS members_name_key;
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_members_user_name_lower
+    ON members (user_id, lower(btrim(name)));
+  `);
+
+  await pool.query(`
+    ALTER TABLE snapshot_periods
+    DROP CONSTRAINT IF EXISTS snapshot_periods_period_date_key;
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_snapshot_periods_user_period_date
+    ON snapshot_periods (user_id, period_date);
   `);
 
   await pool.query(`

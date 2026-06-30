@@ -17,6 +17,10 @@
         <a href="/trends">趋势</a>
         <a href="/backup">备份</a>
         <% if (authEnabled) { %>
+          <% if (currentAdmin && currentAdmin.isAdmin) { %>
+            <a href="/admin/users">用户管理</a>
+          <% } %>
+          <a href="/account/password">账号</a>
           <form method="POST" action="/logout" class="nav-form">
             <button type="submit" class="nav-button">退出</button>
           </form>

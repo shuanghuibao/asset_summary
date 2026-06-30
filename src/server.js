@@ -70,6 +70,7 @@ function setAuthCookie(res, admin) {
   const token = signSession({
     adminId: admin.id,
     email: admin.email,
+    isAdmin: Boolean(admin.is_admin),
     exp: Date.now() + 1000 * 60 * 60 * 24 * 30,
   });
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
@@ -117,14 +118,28 @@ async function findAdminByEmail(email) {
   return result.rows[0] || null;
 }
 
-async function createAdminUser(email, password) {
+async function findAdminById(id) {
+  const result = await pool.query("SELECT * FROM admin_users WHERE id = $1 LIMIT 1", [id]);
+  return result.rows[0] || null;
+}
+
+async function createAdminUser(email, password, isAdmin = false) {
   const result = await pool.query(
-    `INSERT INTO admin_users (email, password_hash)
-     VALUES ($1, $2)
-     RETURNING id, email`,
-    [normalizeEmail(email), hashPassword(password)]
+    `INSERT INTO admin_users (email, password_hash, is_admin)
+     VALUES ($1, $2, $3)
+     RETURNING id, email, is_admin`,
+    [normalizeEmail(email), hashPassword(password), Boolean(isAdmin)]
   );
   return result.rows[0];
+}
+
+async function updateAdminPassword(adminId, password) {
+  await pool.query(
+    `UPDATE admin_users
+     SET password_hash = $1, updated_at = NOW()
+     WHERE id = $2`,
+    [hashPassword(password), adminId]
+  );
 }
 
 async function requireAuth(req, res, next) {
@@ -149,8 +164,20 @@ async function requireAuth(req, res, next) {
   const cookies = parseCookies(req.headers.cookie || "");
   const session = verifySession(cookies.asset_session);
   if (session) {
-    res.locals.currentAdmin = session;
-    return next();
+    try {
+      const admin = await findAdminById(session.adminId);
+      if (admin) {
+        req.currentAdmin = {
+          adminId: admin.id,
+          email: admin.email,
+          isAdmin: Boolean(admin.is_admin),
+        };
+        res.locals.currentAdmin = req.currentAdmin;
+        return next();
+      }
+    } catch (err) {
+      return next(err);
+    }
   }
   if (isApiRequest(req)) {
     return res.status(401).json({ ok: false, message: "请先登录" });
@@ -184,7 +211,7 @@ app.post("/admin/setup", async (req, res, next) => {
       return res.status(400).render("admin_setup", { title: "创建管理员", error: "两次输入的密码不一致。", email });
     }
 
-    const admin = await createAdminUser(email, password);
+    const admin = await createAdminUser(email, password, true);
     setAuthCookie(res, admin);
     res.redirect("/");
   } catch (err) {
@@ -237,22 +264,139 @@ app.post("/logout", (_req, res) => {
 
 app.use(requireAuth);
 
-async function getPeriods() {
-  const result = await pool.query("SELECT * FROM snapshot_periods ORDER BY period_date DESC");
+function currentUserId(req) {
+  return Number(req.currentAdmin?.adminId);
+}
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function requireAdmin(req, _res, next) {
+  if (!req.currentAdmin?.isAdmin) return next(httpError(403, "仅管理员可以访问"));
+  next();
+}
+
+async function getAdminUsers() {
+  const result = await pool.query(
+    `SELECT id, email, is_admin, created_at, updated_at
+     FROM admin_users
+     ORDER BY is_admin DESC, id ASC`
+  );
   return result.rows;
 }
 
-async function getConfig(includeInactive = false) {
-  const itemFilter = includeInactive ? "" : "WHERE i.is_active = TRUE";
-  const memberFilter = includeInactive ? "" : "WHERE is_active = TRUE";
+function validatePasswordChange({ currentPassword, newPassword, passwordConfirm }) {
+  const errors = [];
+  if (!currentPassword) errors.push("请输入当前密码。");
+  if (String(newPassword || "").length < 8) errors.push("新密码至少需要 8 位。");
+  if (newPassword !== passwordConfirm) errors.push("两次输入的新密码不一致。");
+  return errors;
+}
+
+function validateNewUserPayload({ email, password, passwordConfirm }) {
+  const errors = [];
+  if (!isValidEmail(email)) errors.push("请输入有效的邮箱地址。");
+  if (String(password || "").length < 8) errors.push("密码至少需要 8 位。");
+  if (password !== passwordConfirm) errors.push("两次输入的密码不一致。");
+  return errors;
+}
+
+app.get("/admin/users", requireAdmin, async (req, res, next) => {
+  try {
+    res.render("admin_users", {
+      title: "用户管理",
+      users: await getAdminUsers(),
+      message: req.query.created ? "用户已创建。" : "",
+      error: "",
+      email: "",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/admin/users", requireAdmin, async (req, res, next) => {
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || "");
+  const passwordConfirm = String(req.body.password_confirm || "");
+  try {
+    const errors = validateNewUserPayload({ email, password, passwordConfirm });
+    if (errors.length) {
+      return res.status(400).render("admin_users", {
+        title: "用户管理",
+        users: await getAdminUsers(),
+        message: "",
+        error: errors.join(" "),
+        email,
+      });
+    }
+
+    await createAdminUser(email, password, false);
+    res.redirect("/admin/users?created=1");
+  } catch (err) {
+    if (err?.code === "23505") {
+      return res.status(409).render("admin_users", {
+        title: "用户管理",
+        users: await getAdminUsers(),
+        message: "",
+        error: "该邮箱已存在。",
+        email,
+      });
+    }
+    next(err);
+  }
+});
+
+app.get("/account/password", (req, res) => {
+  res.render("change_password", {
+    title: "修改密码",
+    message: "",
+    error: "",
+  });
+});
+
+app.post("/account/password", async (req, res, next) => {
+  try {
+    const currentPassword = String(req.body.current_password || "");
+    const newPassword = String(req.body.new_password || "");
+    const passwordConfirm = String(req.body.password_confirm || "");
+    const errors = validatePasswordChange({ currentPassword, newPassword, passwordConfirm });
+    if (errors.length) {
+      return res.status(400).render("change_password", { title: "修改密码", message: "", error: errors.join(" ") });
+    }
+
+    const admin = await findAdminById(currentUserId(req));
+    if (!admin || !verifyPassword(currentPassword, admin.password_hash)) {
+      return res.status(400).render("change_password", { title: "修改密码", message: "", error: "当前密码不正确。" });
+    }
+
+    await updateAdminPassword(admin.id, newPassword);
+    res.render("change_password", { title: "修改密码", message: "密码已更新。", error: "" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function getPeriods(userId) {
+  const result = await pool.query("SELECT * FROM snapshot_periods WHERE user_id = $1 ORDER BY period_date DESC", [userId]);
+  return result.rows;
+}
+
+async function getConfig(userId, includeInactive = false) {
+  const itemFilter = includeInactive ? "WHERE i.user_id = $1" : "WHERE i.user_id = $1 AND i.is_active = TRUE";
+  const memberFilter = includeInactive ? "WHERE user_id = $1" : "WHERE user_id = $1 AND is_active = TRUE";
   const [membersRes, itemsRes] = await Promise.all([
-    pool.query(`SELECT * FROM members ${memberFilter} ORDER BY is_active DESC, id ASC`),
+    pool.query(`SELECT * FROM members ${memberFilter} ORDER BY is_active DESC, id ASC`, [userId]),
     pool.query(
       `SELECT i.*, m.name AS owner_member_name
        FROM tracking_items i
-       LEFT JOIN members m ON m.id = i.owner_member_id
+       LEFT JOIN members m ON m.id = i.owner_member_id AND m.user_id = i.user_id
        ${itemFilter}
-       ORDER BY i.is_active DESC, i.owner_member_id NULLS LAST, i.id ASC`
+       ORDER BY i.is_active DESC, i.owner_member_id NULLS LAST, i.id ASC`,
+      [userId]
     ),
   ]);
 
@@ -262,14 +406,17 @@ async function getConfig(includeInactive = false) {
   };
 }
 
-async function getLatestPeriodValues(periodId) {
+async function getLatestPeriodValues(userId, periodId) {
   const result = await pool.query(
     `SELECT v.amount, i.kind, i.asset_group, i.name, i.owner_member_id, m.name AS member_name
      FROM snapshot_values v
+     JOIN snapshot_periods p ON p.id = v.period_id
      JOIN tracking_items i ON i.id = v.item_id
-     LEFT JOIN members m ON m.id = i.owner_member_id
-     WHERE v.period_id = $1`,
-    [periodId]
+     LEFT JOIN members m ON m.id = i.owner_member_id AND m.user_id = i.user_id
+     WHERE v.period_id = $1
+       AND p.user_id = $2
+       AND i.user_id = $2`,
+    [periodId, userId]
   );
   return result.rows;
 }
@@ -278,10 +425,19 @@ function formatDate(value) {
   return dayjs(value).format("YYYY-MM-DD");
 }
 
-async function getPeriodSnapshot(periodId) {
+async function getPeriodSnapshot(userId, periodId) {
   const [periodRes, valuesRes] = await Promise.all([
-    pool.query("SELECT * FROM snapshot_periods WHERE id = $1", [periodId]),
-    pool.query("SELECT item_id, amount FROM snapshot_values WHERE period_id = $1", [periodId]),
+    pool.query("SELECT * FROM snapshot_periods WHERE id = $1 AND user_id = $2", [periodId, userId]),
+    pool.query(
+      `SELECT v.item_id, v.amount
+       FROM snapshot_values v
+       JOIN snapshot_periods p ON p.id = v.period_id
+       JOIN tracking_items i ON i.id = v.item_id
+       WHERE v.period_id = $1
+         AND p.user_id = $2
+         AND i.user_id = $2`,
+      [periodId, userId]
+    ),
   ]);
   if (!periodRes.rows.length) return null;
   return {
@@ -290,16 +446,27 @@ async function getPeriodSnapshot(periodId) {
   };
 }
 
-async function getBackupData() {
+async function getBackupData(userId) {
   const [members, items, periods, values] = await Promise.all([
-    pool.query("SELECT id, name, is_active, created_at FROM members ORDER BY id ASC"),
+    pool.query("SELECT id, name, is_active, created_at FROM members WHERE user_id = $1 ORDER BY id ASC", [userId]),
     pool.query(
       `SELECT id, name, kind, asset_group, owner_member_id, is_active, created_at
        FROM tracking_items
-       ORDER BY id ASC`
+       WHERE user_id = $1
+       ORDER BY id ASC`,
+      [userId]
     ),
-    pool.query("SELECT id, period_date, stock_pnl_manual, note, created_at FROM snapshot_periods ORDER BY period_date ASC"),
-    pool.query("SELECT id, period_id, item_id, amount, created_at FROM snapshot_values ORDER BY period_id ASC, item_id ASC"),
+    pool.query("SELECT id, period_date, stock_pnl_manual, note, created_at FROM snapshot_periods WHERE user_id = $1 ORDER BY period_date ASC", [userId]),
+    pool.query(
+      `SELECT v.id, v.period_id, v.item_id, v.amount, v.created_at
+       FROM snapshot_values v
+       JOIN snapshot_periods p ON p.id = v.period_id
+       JOIN tracking_items i ON i.id = v.item_id
+       WHERE p.user_id = $1
+         AND i.user_id = $1
+       ORDER BY v.period_id ASC, v.item_id ASC`,
+      [userId]
+    ),
   ]);
   return {
     exportedAt: new Date().toISOString(),
@@ -316,7 +483,7 @@ function csvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-async function buildSnapshotsCsv() {
+async function buildSnapshotsCsv(userId) {
   const result = await pool.query(
     `SELECT
       p.period_date,
@@ -330,8 +497,12 @@ async function buildSnapshotsCsv() {
      FROM snapshot_periods p
      JOIN snapshot_values v ON v.period_id = p.id
      JOIN tracking_items i ON i.id = v.item_id
-     LEFT JOIN members m ON m.id = i.owner_member_id
+     LEFT JOIN members m ON m.id = i.owner_member_id AND m.user_id = i.user_id
+     WHERE p.user_id = $1
+       AND i.user_id = $1
      ORDER BY p.period_date ASC, i.id ASC`
+    ,
+    [userId]
   );
   const rows = [["period_date", "note", "stock_pnl_manual", "item_name", "kind", "asset_group", "owner", "amount"]];
   for (const row of result.rows) {
@@ -451,7 +622,7 @@ async function resetSequence(client, tableName) {
   await client.query(`SELECT setval(pg_get_serial_sequence('${tableName}', 'id'), COALESCE((SELECT MAX(id) FROM ${tableName}), 1), true)`);
 }
 
-async function importBackupData(data) {
+async function importBackupData(userId, data) {
   const members = ensureArray(data.members, "members");
   const items = ensureArray(data.trackingItems, "trackingItems");
   const periods = ensureArray(data.snapshotPeriods, "snapshotPeriods");
@@ -459,48 +630,66 @@ async function importBackupData(data) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("DELETE FROM snapshot_values");
-    await client.query("DELETE FROM snapshot_periods");
-    await client.query("DELETE FROM tracking_items");
-    await client.query("DELETE FROM members");
+    await client.query(
+      `DELETE FROM snapshot_values v
+       USING snapshot_periods p
+       WHERE v.period_id = p.id
+         AND p.user_id = $1`,
+      [userId]
+    );
+    await client.query("DELETE FROM snapshot_periods WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM tracking_items WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM members WHERE user_id = $1", [userId]);
 
+    const memberIdMap = new Map();
     for (const member of members) {
-      await client.query(
-        `INSERT INTO members (id, name, is_active, created_at)
-         VALUES ($1, $2, $3, COALESCE($4::timestamp, NOW()))`,
-        [Number(member.id), String(member.name || "").trim(), member.is_active !== false, member.created_at || null]
+      const inserted = await client.query(
+        `INSERT INTO members (user_id, name, is_active, created_at)
+         VALUES ($1, $2, $3, COALESCE($4::timestamp, NOW()))
+         RETURNING id`,
+        [userId, String(member.name || "").trim(), member.is_active !== false, member.created_at || null]
       );
+      memberIdMap.set(Number(member.id), Number(inserted.rows[0].id));
     }
 
+    const itemIdMap = new Map();
     for (const item of items) {
-      await client.query(
-        `INSERT INTO tracking_items (id, name, kind, asset_group, owner_member_id, is_active, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))`,
+      const inserted = await client.query(
+        `INSERT INTO tracking_items (user_id, name, kind, asset_group, owner_member_id, is_active, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
+         RETURNING id`,
         [
-          Number(item.id),
+          userId,
           String(item.name || "").trim(),
           item.kind,
           item.kind === "asset" ? item.asset_group || "other" : null,
-          item.owner_member_id || null,
+          item.owner_member_id ? memberIdMap.get(Number(item.owner_member_id)) || null : null,
           item.is_active !== false,
           item.created_at || null,
         ]
       );
+      itemIdMap.set(Number(item.id), Number(inserted.rows[0].id));
     }
 
+    const periodIdMap = new Map();
     for (const period of periods) {
-      await client.query(
-        `INSERT INTO snapshot_periods (id, period_date, note, stock_pnl_manual, created_at)
-         VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))`,
-        [Number(period.id), period.period_date, period.note || "", toNumber(period.stock_pnl_manual), period.created_at || null]
+      const inserted = await client.query(
+        `INSERT INTO snapshot_periods (user_id, period_date, note, stock_pnl_manual, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))
+         RETURNING id`,
+        [userId, period.period_date, period.note || "", toNumber(period.stock_pnl_manual), period.created_at || null]
       );
+      periodIdMap.set(Number(period.id), Number(inserted.rows[0].id));
     }
 
     for (const value of values) {
+      const periodId = periodIdMap.get(Number(value.period_id));
+      const itemId = itemIdMap.get(Number(value.item_id));
+      if (!periodId || !itemId) continue;
       await client.query(
-        `INSERT INTO snapshot_values (id, period_id, item_id, amount, created_at)
-         VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))`,
-        [Number(value.id), Number(value.period_id), Number(value.item_id), toNumber(value.amount), value.created_at || null]
+        `INSERT INTO snapshot_values (period_id, item_id, amount, created_at)
+         VALUES ($1, $2, $3, COALESCE($4::timestamp, NOW()))`,
+        [periodId, itemId, toNumber(value.amount), value.created_at || null]
       );
     }
 
@@ -517,9 +706,19 @@ async function importBackupData(data) {
   }
 }
 
+async function resolveOwnerMemberId(db, userId, value) {
+  if (!value) return null;
+  const id = Number(value);
+  if (!Number.isInteger(id)) throw httpError(400, "无效的成员归属");
+  const result = await db.query("SELECT id FROM members WHERE id = $1 AND user_id = $2", [id, userId]);
+  if (!result.rows.length) throw httpError(400, "无效的成员归属");
+  return id;
+}
+
 app.get("/", async (req, res, next) => {
   try {
-    const config = await getConfig();
+    const userId = currentUserId(req);
+    const config = await getConfig(userId);
     if (!config.members.length || !config.items.length) {
       return res.render("overview", {
         title: "总览",
@@ -533,7 +732,7 @@ app.get("/", async (req, res, next) => {
       });
     }
 
-    const periods = await getPeriods();
+    const periods = await getPeriods(userId);
     if (!periods.length) {
       return res.render("overview", {
         title: "总览",
@@ -547,8 +746,8 @@ app.get("/", async (req, res, next) => {
       });
     }
 
-    const latestValuesAll = await getLatestPeriodValues(periods[0].id);
-    const previousValuesAll = periods[1] ? await getLatestPeriodValues(periods[1].id) : [];
+    const latestValuesAll = await getLatestPeriodValues(userId, periods[0].id);
+    const previousValuesAll = periods[1] ? await getLatestPeriodValues(userId, periods[1].id) : [];
     const viewMode = req.query.view === "member" ? "member" : "family";
     const selectedMemberId = Number(req.query.member_id || 0);
     const memberExists = config.members.some((m) => m.id === selectedMemberId);
@@ -639,9 +838,9 @@ app.get("/backup", (_req, res) => {
   res.render("backup", { title: "备份", message: "", error: "" });
 });
 
-app.get("/backup/export.json", async (_req, res, next) => {
+app.get("/backup/export.json", async (req, res, next) => {
   try {
-    const data = await getBackupData();
+    const data = await getBackupData(currentUserId(req));
     const filename = `family-asset-backup-${dayjs().format("YYYYMMDD-HHmmss")}.json`;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -651,9 +850,9 @@ app.get("/backup/export.json", async (_req, res, next) => {
   }
 });
 
-app.get("/backup/export.csv", async (_req, res, next) => {
+app.get("/backup/export.csv", async (req, res, next) => {
   try {
-    const csv = await buildSnapshotsCsv();
+    const csv = await buildSnapshotsCsv(currentUserId(req));
     const filename = `family-asset-snapshots-${dayjs().format("YYYYMMDD-HHmmss")}.csv`;
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -665,12 +864,13 @@ app.get("/backup/export.csv", async (_req, res, next) => {
 
 app.post("/backup/import", async (req, res) => {
   try {
+    const userId = currentUserId(req);
     const raw = String(req.body.backup_json || "").trim();
     if (!raw) {
       return res.status(400).render("backup", { title: "备份", message: "", error: "请粘贴 JSON 备份内容。" });
     }
     const data = JSON.parse(raw);
-    await importBackupData(data);
+    await importBackupData(userId, data);
     res.render("backup", { title: "备份", message: "备份已导入，数据已恢复。", error: "" });
   } catch (err) {
     res.status(400).render("backup", { title: "备份", message: "", error: err.message || "导入失败，请检查备份内容。" });
@@ -679,7 +879,7 @@ app.post("/backup/import", async (req, res) => {
 
 app.get("/setup", async (req, res, next) => {
   try {
-    const config = await getConfig(true);
+    const config = await getConfig(currentUserId(req), true);
     res.render("setup", { title: "Setup", config });
   } catch (err) {
     next(err);
@@ -688,6 +888,7 @@ app.get("/setup", async (req, res, next) => {
 
 app.post("/setup/members", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const names = String(req.body.member_names || "")
       .split(",")
       .map((x) => x.trim())
@@ -695,16 +896,23 @@ app.post("/setup/members", async (req, res, next) => {
 
     if (names.length) {
       await pool.query(
-        `INSERT INTO members (name)
-         SELECT DISTINCT name
-         FROM unnest($1::text[]) AS name
-         WHERE length(trim(name)) > 0
-         ON CONFLICT (name) DO NOTHING`,
-        [names]
+        `INSERT INTO members (user_id, name)
+         SELECT $1, name
+         FROM (
+           SELECT DISTINCT ON (lower(btrim(name))) btrim(name) AS name
+           FROM unnest($2::text[]) AS name
+           WHERE length(btrim(name)) > 0
+         ) incoming
+         WHERE NOT EXISTS (
+           SELECT 1 FROM members m
+           WHERE m.user_id = $1
+             AND lower(btrim(m.name)) = lower(btrim(incoming.name))
+         )`,
+        [userId, names]
       );
     }
 
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -717,6 +925,7 @@ app.post("/setup/members", async (req, res, next) => {
 app.post("/setup/members/batch-save", async (req, res, next) => {
   const client = await pool.connect();
   try {
+    const userId = currentUserId(req);
     const members = Array.isArray(req.body.members) ? req.body.members : [];
     await client.query("BEGIN");
 
@@ -729,13 +938,13 @@ app.post("/setup/members/batch-save", async (req, res, next) => {
       if (!Number.isInteger(id)) continue;
 
       if (Boolean(raw.marked_for_delete)) {
-        const usageRes = await client.query("SELECT COUNT(*)::int AS cnt FROM tracking_items WHERE owner_member_id = $1", [id]);
+        const usageRes = await client.query("SELECT COUNT(*)::int AS cnt FROM tracking_items WHERE owner_member_id = $1 AND user_id = $2", [id, userId]);
         const usageCount = Number(usageRes.rows[0]?.cnt || 0);
         if (usageCount > 0) {
           skippedDeleteIds.push(id);
           continue;
         }
-        const delRes = await client.query("DELETE FROM members WHERE id = $1", [id]);
+        const delRes = await client.query("DELETE FROM members WHERE id = $1 AND user_id = $2", [id, userId]);
         if (delRes.rowCount > 0) deletedCount += 1;
         continue;
       }
@@ -747,14 +956,14 @@ app.post("/setup/members/batch-save", async (req, res, next) => {
       const upRes = await client.query(
         `UPDATE members
          SET name = $1, is_active = $2
-         WHERE id = $3`,
-        [name, isActive, id]
+         WHERE id = $3 AND user_id = $4`,
+        [name, isActive, id, userId]
       );
       if (upRes.rowCount > 0) updatedCount += 1;
     }
 
     await client.query("COMMIT");
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     return res.json({
       ok: true,
       config,
@@ -776,17 +985,19 @@ app.post("/setup/members/batch-save", async (req, res, next) => {
 
 app.post("/setup/items", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const itemName = String(req.body.item_name || "").trim();
     const kind = req.body.kind;
     const assetGroup = kind === "asset" ? req.body.asset_group || "other" : null;
+    const ownerMemberId = await resolveOwnerMemberId(pool, userId, req.body.owner_member_id);
     const returnTo = req.body.return_to === "/entry" ? "/entry" : "/setup";
 
     await pool.query(
-      `INSERT INTO tracking_items (name, kind, asset_group, owner_member_id)
-       VALUES ($1, $2, $3, $4)`,
-      [itemName, kind, assetGroup, req.body.owner_member_id || null]
+      `INSERT INTO tracking_items (user_id, name, kind, asset_group, owner_member_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, itemName, kind, assetGroup, ownerMemberId]
     );
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -802,9 +1013,9 @@ app.post("/setup/items", async (req, res, next) => {
   }
 });
 
-app.get("/api/setup-config", async (_req, res, next) => {
+app.get("/api/setup-config", async (req, res, next) => {
   try {
-    const config = await getConfig(true);
+    const config = await getConfig(currentUserId(req), true);
     res.json({ ok: true, config });
   } catch (err) {
     next(err);
@@ -813,20 +1024,22 @@ app.get("/api/setup-config", async (_req, res, next) => {
 
 app.post("/setup/items/:id/update", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const id = Number(req.params.id);
     const itemName = String(req.body.item_name || "").trim();
     const kind = req.body.kind;
     const assetGroup = kind === "asset" ? req.body.asset_group || "other" : null;
-    const ownerMemberId = req.body.owner_member_id || null;
+    const ownerMemberId = await resolveOwnerMemberId(pool, userId, req.body.owner_member_id);
 
-    await pool.query(
+    const result = await pool.query(
       `UPDATE tracking_items
        SET name = $1, kind = $2, asset_group = $3, owner_member_id = $4
-       WHERE id = $5`,
-      [itemName, kind, assetGroup, ownerMemberId, id]
+       WHERE id = $5 AND user_id = $6`,
+      [itemName, kind, assetGroup, ownerMemberId, id, userId]
     );
+    if (!result.rowCount) throw httpError(404, "科目不存在");
 
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -841,10 +1054,12 @@ app.post("/setup/items/:id/update", async (req, res, next) => {
 
 app.post("/setup/items/:id/toggle-active", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const id = Number(req.params.id);
     const active = String(req.body.active) === "true";
-    await pool.query("UPDATE tracking_items SET is_active = $1 WHERE id = $2", [active, id]);
-    const config = await getConfig(true);
+    const result = await pool.query("UPDATE tracking_items SET is_active = $1 WHERE id = $2 AND user_id = $3", [active, id, userId]);
+    if (!result.rowCount) throw httpError(404, "科目不存在");
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -856,8 +1071,16 @@ app.post("/setup/items/:id/toggle-active", async (req, res, next) => {
 
 app.post("/setup/items/:id/delete", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const id = Number(req.params.id);
-    const usageRes = await pool.query("SELECT COUNT(*)::int AS cnt FROM snapshot_values WHERE item_id = $1", [id]);
+    const usageRes = await pool.query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM snapshot_values v
+       JOIN tracking_items i ON i.id = v.item_id
+       WHERE v.item_id = $1
+         AND i.user_id = $2`,
+      [id, userId]
+    );
     const usageCount = Number(usageRes.rows[0]?.cnt || 0);
     if (usageCount > 0) {
       return res.status(409).json({
@@ -866,8 +1089,9 @@ app.post("/setup/items/:id/delete", async (req, res, next) => {
       });
     }
 
-    await pool.query("DELETE FROM tracking_items WHERE id = $1", [id]);
-    const config = await getConfig(true);
+    const result = await pool.query("DELETE FROM tracking_items WHERE id = $1 AND user_id = $2", [id, userId]);
+    if (!result.rowCount) throw httpError(404, "科目不存在");
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -879,6 +1103,7 @@ app.post("/setup/items/:id/delete", async (req, res, next) => {
 
 app.post("/setup/items/bulk-delete", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const ids = Array.isArray(req.body.ids) ? req.body.ids.map((x) => Number(x)).filter((x) => Number.isInteger(x)) : [];
     if (!ids.length) {
       return res.status(400).json({ ok: false, message: "未选择科目" });
@@ -886,19 +1111,21 @@ app.post("/setup/items/bulk-delete", async (req, res, next) => {
 
     const usageRes = await pool.query(
       `SELECT item_id, COUNT(*)::int AS cnt
-       FROM snapshot_values
-       WHERE item_id = ANY($1::int[])
+       FROM snapshot_values v
+       JOIN tracking_items i ON i.id = v.item_id
+       WHERE v.item_id = ANY($1::int[])
+         AND i.user_id = $2
        GROUP BY item_id`,
-      [ids]
+      [ids, userId]
     );
     const blockedIds = usageRes.rows.filter((r) => Number(r.cnt) > 0).map((r) => Number(r.item_id));
     const deletableIds = ids.filter((id) => !blockedIds.includes(id));
 
     if (deletableIds.length) {
-      await pool.query("DELETE FROM tracking_items WHERE id = ANY($1::int[])", [deletableIds]);
+      await pool.query("DELETE FROM tracking_items WHERE id = ANY($1::int[]) AND user_id = $2", [deletableIds, userId]);
     }
 
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     return res.json({
       ok: true,
       config,
@@ -914,6 +1141,7 @@ app.post("/setup/items/bulk-delete", async (req, res, next) => {
 app.post("/setup/items/batch-save", async (req, res, next) => {
   const client = await pool.connect();
   try {
+    const userId = currentUserId(req);
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     await client.query("BEGIN");
 
@@ -927,20 +1155,27 @@ app.post("/setup/items/batch-save", async (req, res, next) => {
       const markedForDelete = Boolean(raw.marked_for_delete);
 
       if (markedForDelete) {
-        const usageRes = await client.query("SELECT COUNT(*)::int AS cnt FROM snapshot_values WHERE item_id = $1", [id]);
+        const usageRes = await client.query(
+          `SELECT COUNT(*)::int AS cnt
+           FROM snapshot_values v
+           JOIN tracking_items i ON i.id = v.item_id
+           WHERE v.item_id = $1
+             AND i.user_id = $2`,
+          [id, userId]
+        );
         const usageCount = Number(usageRes.rows[0]?.cnt || 0);
         if (usageCount > 0) {
           skippedDeleteIds.push(id);
           continue;
         }
-        const delRes = await client.query("DELETE FROM tracking_items WHERE id = $1", [id]);
+        const delRes = await client.query("DELETE FROM tracking_items WHERE id = $1 AND user_id = $2", [id, userId]);
         if (delRes.rowCount > 0) deletedCount += 1;
         continue;
       }
 
       const kind = String(raw.kind || "").trim();
       const name = String(raw.name || "").trim();
-      const ownerMemberId = raw.owner_member_id ? Number(raw.owner_member_id) : null;
+      const ownerMemberId = await resolveOwnerMemberId(client, userId, raw.owner_member_id);
       const isActive = raw.is_active !== false;
       const assetGroup = kind === "asset" ? String(raw.asset_group || "other").trim() : null;
       if (!name || !["asset", "liability", "income", "expense"].includes(kind)) continue;
@@ -948,14 +1183,14 @@ app.post("/setup/items/batch-save", async (req, res, next) => {
       const upRes = await client.query(
         `UPDATE tracking_items
          SET name = $1, kind = $2, asset_group = $3, owner_member_id = $4, is_active = $5
-         WHERE id = $6`,
-        [name, kind, assetGroup, ownerMemberId, isActive, id]
+         WHERE id = $6 AND user_id = $7`,
+        [name, kind, assetGroup, ownerMemberId, isActive, id, userId]
       );
       if (upRes.rowCount > 0) updatedCount += 1;
     }
 
     await client.query("COMMIT");
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     return res.json({
       ok: true,
       config,
@@ -977,7 +1212,8 @@ app.post("/setup/items/batch-save", async (req, res, next) => {
 
 app.post("/setup/templates/basic", async (req, res, next) => {
   try {
-    const membersRes = await pool.query("SELECT id, name FROM members ORDER BY id ASC");
+    const userId = currentUserId(req);
+    const membersRes = await pool.query("SELECT id, name FROM members WHERE user_id = $1 ORDER BY id ASC", [userId]);
     const members = membersRes.rows;
 
     const commonItems = [
@@ -998,14 +1234,21 @@ app.post("/setup/templates/basic", async (req, res, next) => {
     const templateItems = [...commonItems, ...memberItems];
     for (const item of templateItems) {
       await pool.query(
-        `INSERT INTO tracking_items (name, kind, asset_group, owner_member_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
-        [item.name, item.kind, item.asset_group, item.owner_member_id]
+        `INSERT INTO tracking_items (user_id, name, kind, asset_group, owner_member_id)
+         SELECT $1, $2, $3, $4, $5
+         WHERE NOT EXISTS (
+           SELECT 1 FROM tracking_items i
+           WHERE i.user_id = $1
+             AND i.is_active = TRUE
+             AND lower(btrim(i.name)) = lower(btrim($2))
+             AND i.kind = $3
+             AND COALESCE(i.owner_member_id, 0) = COALESCE($5::int, 0)
+         )`,
+        [userId, item.name, item.kind, item.asset_group, item.owner_member_id]
       );
     }
 
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     if (isApiRequest(req)) {
       return res.json({ ok: true, config });
     }
@@ -1017,15 +1260,16 @@ app.post("/setup/templates/basic", async (req, res, next) => {
 
 app.get("/entry", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const selectedPeriodId = Number(req.query.period_id || 0);
     const copyFromId = Number(req.query.copy_from || 0);
     const sourcePeriodId = selectedPeriodId || copyFromId;
-    const selectedSnapshot = sourcePeriodId ? await getPeriodSnapshot(sourcePeriodId) : null;
-    const config = await getConfig(Boolean(selectedSnapshot));
+    const selectedSnapshot = sourcePeriodId ? await getPeriodSnapshot(userId, sourcePeriodId) : null;
+    const config = await getConfig(userId, Boolean(selectedSnapshot));
     if (!config.members.length || !config.items.length) {
       return res.redirect("/setup");
     }
-    const periods = await getPeriods();
+    const periods = await getPeriods(userId);
     res.render("entry", {
       title: "录入",
       periods,
@@ -1046,10 +1290,11 @@ app.get("/entry", async (req, res, next) => {
 app.post("/entry", async (req, res, next) => {
   const client = await pool.connect();
   try {
+    const userId = currentUserId(req);
     const validationErrors = validateEntryPayload(req.body);
     if (validationErrors.length) {
-      const config = await getConfig(true);
-      const periods = await getPeriods();
+      const config = await getConfig(userId, true);
+      const periods = await getPeriods(userId);
       return res.status(400).render("entry", {
         title: "录入",
         periods,
@@ -1072,18 +1317,18 @@ app.post("/entry", async (req, res, next) => {
     await client.query("BEGIN");
 
     const periodRes = await client.query(
-      `INSERT INTO snapshot_periods (period_date, note, stock_pnl_manual)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (period_date)
+      `INSERT INTO snapshot_periods (user_id, period_date, note, stock_pnl_manual)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, period_date)
        DO UPDATE SET
          note = EXCLUDED.note,
          stock_pnl_manual = EXCLUDED.stock_pnl_manual
        RETURNING id, period_date`,
-      [periodDate, note, toNumber(req.body.stock_pnl_manual)]
+      [userId, periodDate, note, toNumber(req.body.stock_pnl_manual)]
     );
     const period = periodRes.rows[0];
 
-    const config = await getConfig(true);
+    const config = await getConfig(userId, true);
     for (const item of config.items) {
       const field = `item_${item.id}`;
       if (!Object.prototype.hasOwnProperty.call(req.body, field)) continue;
@@ -1109,11 +1354,13 @@ app.post("/entry", async (req, res, next) => {
 
 app.post("/entry/periods/:id/delete", async (req, res, next) => {
   try {
+    const userId = currentUserId(req);
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
       return res.status(400).send("无效的周期 ID");
     }
-    await pool.query("DELETE FROM snapshot_periods WHERE id = $1", [id]);
+    const result = await pool.query("DELETE FROM snapshot_periods WHERE id = $1 AND user_id = $2", [id, userId]);
+    if (!result.rowCount) throw httpError(404, "周期不存在");
     res.redirect("/entry");
   } catch (err) {
     next(err);
@@ -1122,7 +1369,8 @@ app.post("/entry/periods/:id/delete", async (req, res, next) => {
 
 app.get("/trends", async (req, res, next) => {
   try {
-    const config = await getConfig();
+    const userId = currentUserId(req);
+    const config = await getConfig(userId);
     if (!config.members.length || !config.items.length) {
       return res.redirect("/setup");
     }
@@ -1138,7 +1386,10 @@ app.get("/trends", async (req, res, next) => {
        FROM snapshot_periods p
        JOIN snapshot_values v ON v.period_id = p.id
        JOIN tracking_items i ON i.id = v.item_id
-       ORDER BY p.period_date ASC`
+       WHERE p.user_id = $1
+         AND i.user_id = $1
+       ORDER BY p.period_date ASC`,
+      [userId]
     );
     const viewMode = req.query.view === "member" ? "member" : "family";
     const selectedMemberId = Number(req.query.member_id || 0);
@@ -1229,7 +1480,8 @@ app.get("/healthz", (_req, res) => {
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(500).send("服务器错误，请检查日志。");
+  const status = Number(err.status || 500);
+  res.status(status).send(status === 500 ? "服务器错误，请检查日志。" : err.message);
 });
 
 app.listen(port, () => {
