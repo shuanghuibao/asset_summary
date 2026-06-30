@@ -4,7 +4,8 @@
   "description": "Family asset tracking app with trends and summaries",
   "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
+    "dev": "node scripts/dev.js",
+    "dev:app": "nodemon src/server.js",
     "start": "node src/server.js",
     "db:migrate": "node src/db/migrate.js"
   },

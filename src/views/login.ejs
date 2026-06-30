@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><%= title %> - 家庭资产</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container auth-container">
+      <section class="card auth-card">
+        <h1>登录家庭资产</h1>
+        <p class="muted">使用管理员邮箱和密码登录，查看和维护家庭资产数据。</p>
+        <% if (error) { %>
+          <p class="error"><%= error %></p>
+        <% } %>
+        <form method="POST" action="/login" class="form-grid">
+          <input type="hidden" name="next" value="<%= typeof next !== 'undefined' ? next : '' %>" />
+          <label>邮箱
+            <input name="email" type="email" value="<%= email || '' %>" required autofocus autocomplete="username" />
+          </label>
+          <label>密码
+            <input name="password" type="password" required autocomplete="current-password" />
+          </label>
+          <button type="submit">登录</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

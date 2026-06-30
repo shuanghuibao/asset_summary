@@ -1,0 +1,48 @@
+<%- include("partials/header", { title }) %>
+
+<section class="card">
+  <div class="section-header">
+    <div>
+      <h2>数据导出与备份</h2>
+      <p class="muted">定期导出备份，避免部署、迁移或误操作造成家庭资产数据丢失。</p>
+    </div>
+  </div>
+  <div class="actions">
+    <a href="/backup/export.json" class="btn-primary-link">下载完整 JSON 备份</a>
+    <a href="/backup/export.csv" class="btn-ghost">下载快照 CSV</a>
+  </div>
+</section>
+
+<section class="card">
+  <h2>导入恢复</h2>
+  <p class="muted">粘贴此前下载的完整 JSON 备份。导入会覆盖当前成员、科目和快照数据，请先确认已经保留当前备份。</p>
+  <% if (message) { %>
+    <p class="status success"><%= message %></p>
+  <% } %>
+  <% if (error) { %>
+    <p class="status error"><%= error %></p>
+  <% } %>
+  <form method="POST" action="/backup/import" class="form-grid" id="backupImportForm">
+    <label>JSON 备份内容
+      <textarea name="backup_json" rows="12" placeholder="粘贴完整 JSON 备份内容" required></textarea>
+    </label>
+    <label class="inline-checkbox">
+      <input type="checkbox" id="confirmImport" required />
+      我确认导入会覆盖当前数据
+    </label>
+    <button type="submit">导入并恢复</button>
+  </form>
+</section>
+
+<script>
+  (() => {
+    const form = document.getElementById("backupImportForm");
+    form?.addEventListener("submit", (event) => {
+      if (!confirm("导入会覆盖当前所有数据，确定继续吗？")) {
+        event.preventDefault();
+      }
+    });
+  })();
+</script>
+
+<%- include("partials/footer") %>

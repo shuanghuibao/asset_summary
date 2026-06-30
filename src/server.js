@@ -1,4 +1,5 @@
 const path = require("path");
+const crypto = require("crypto");
 const express = require("express");
 const dayjs = require("dayjs");
 const { pool } = require("./config/db");
@@ -9,20 +10,232 @@ const port = process.env.PORT || 3000;
 
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(express.json({ limit: "5mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/vendor/chart.js", (_req, res) => {
   res.sendFile(path.join(__dirname, "../node_modules/chart.js/dist/chart.umd.js"));
 });
 app.use((req, res, next) => {
   res.locals.currentPath = req.path;
+  res.locals.authEnabled = true;
   next();
 });
 
 function isApiRequest(req) {
   return req.get("X-Requested-With") === "fetch" || req.accepts(["html", "json"]) === "json";
 }
+
+function getCookieSecret() {
+  return process.env.COOKIE_SECRET || process.env.DATABASE_URL || "family-asset-local-secret";
+}
+
+function parseCookies(cookieHeader = "") {
+  return Object.fromEntries(
+    cookieHeader
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [key, ...valueParts] = part.split("=");
+        return [key, decodeURIComponent(valueParts.join("=") || "")];
+      })
+  );
+}
+
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", getCookieSecret()).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifySession(token) {
+  if (!token || !token.includes(".")) return null;
+  const [body, signature] = token.split(".");
+  const expected = crypto.createHmac("sha256", getCookieSecret()).update(body).digest("base64url");
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    return payload.exp && Date.now() < payload.exp ? payload : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function setAuthCookie(res, admin) {
+  const token = signSession({
+    adminId: admin.id,
+    email: admin.email,
+    exp: Date.now() + 1000 * 60 * 60 * 24 * 30,
+  });
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `asset_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure}`);
+}
+
+function clearAuthCookie(res) {
+  res.setHeader("Set-Cookie", "asset_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+}
+
+function safeRedirectPath(value) {
+  const nextPath = String(value || "");
+  return nextPath.startsWith("/") && !nextPath.startsWith("//") ? nextPath : "/";
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("base64url");
+  const hash = crypto.scryptSync(String(password), salt, 64).toString("base64url");
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const [method, salt, hash] = String(storedHash || "").split(":");
+  if (method !== "scrypt" || !salt || !hash) return false;
+  const actual = Buffer.from(crypto.scryptSync(String(password), salt, 64).toString("base64url"));
+  const expected = Buffer.from(hash);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+async function hasAdminUser() {
+  const result = await pool.query("SELECT EXISTS (SELECT 1 FROM admin_users) AS exists");
+  return Boolean(result.rows[0]?.exists);
+}
+
+async function findAdminByEmail(email) {
+  const result = await pool.query("SELECT * FROM admin_users WHERE lower(email) = lower($1) LIMIT 1", [email]);
+  return result.rows[0] || null;
+}
+
+async function createAdminUser(email, password) {
+  const result = await pool.query(
+    `INSERT INTO admin_users (email, password_hash)
+     VALUES ($1, $2)
+     RETURNING id, email`,
+    [normalizeEmail(email), hashPassword(password)]
+  );
+  return result.rows[0];
+}
+
+async function requireAuth(req, res, next) {
+  if (req.path === "/healthz" || req.path === "/login" || req.path === "/admin/setup" || req.path.startsWith("/vendor/")) {
+    return next();
+  }
+
+  let adminExists = false;
+  try {
+    adminExists = await hasAdminUser();
+  } catch (err) {
+    return next(err);
+  }
+
+  if (!adminExists) {
+    if (isApiRequest(req)) {
+      return res.status(428).json({ ok: false, message: "请先创建管理员账号" });
+    }
+    return res.redirect("/admin/setup");
+  }
+
+  const cookies = parseCookies(req.headers.cookie || "");
+  const session = verifySession(cookies.asset_session);
+  if (session) {
+    res.locals.currentAdmin = session;
+    return next();
+  }
+  if (isApiRequest(req)) {
+    return res.status(401).json({ ok: false, message: "请先登录" });
+  }
+  res.redirect(`/login?next=${encodeURIComponent(req.originalUrl || "/")}`);
+}
+
+app.get("/admin/setup", async (req, res, next) => {
+  try {
+    if (await hasAdminUser()) return res.redirect("/login");
+    res.render("admin_setup", { title: "创建管理员", error: "", email: "" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/admin/setup", async (req, res, next) => {
+  try {
+    if (await hasAdminUser()) return res.redirect("/login");
+    const email = normalizeEmail(req.body.email);
+    const password = String(req.body.password || "");
+    const passwordConfirm = String(req.body.password_confirm || "");
+
+    if (!isValidEmail(email)) {
+      return res.status(400).render("admin_setup", { title: "创建管理员", error: "请输入有效的邮箱地址。", email });
+    }
+    if (password.length < 8) {
+      return res.status(400).render("admin_setup", { title: "创建管理员", error: "密码至少需要 8 位。", email });
+    }
+    if (password !== passwordConfirm) {
+      return res.status(400).render("admin_setup", { title: "创建管理员", error: "两次输入的密码不一致。", email });
+    }
+
+    const admin = await createAdminUser(email, password);
+    setAuthCookie(res, admin);
+    res.redirect("/");
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/login", async (req, res, next) => {
+  try {
+    if (!(await hasAdminUser())) return res.redirect("/admin/setup");
+    const cookies = parseCookies(req.headers.cookie || "");
+    if (verifySession(cookies.asset_session)) return res.redirect(safeRedirectPath(req.query.next));
+    res.render("login", {
+      title: "登录",
+      error: "",
+      email: "",
+      next: req.query.next || "",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/login", async (req, res, next) => {
+  try {
+    if (!(await hasAdminUser())) return res.redirect("/admin/setup");
+    const email = normalizeEmail(req.body.email);
+    const password = String(req.body.password || "");
+    const admin = await findAdminByEmail(email);
+    if (!admin || !verifyPassword(password, admin.password_hash)) {
+      return res.status(401).render("login", {
+        title: "登录",
+        error: "邮箱或密码不正确。",
+        email,
+        next: req.body.next || "",
+      });
+    }
+
+    setAuthCookie(res, admin);
+    res.redirect(safeRedirectPath(req.body.next));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/logout", (_req, res) => {
+  clearAuthCookie(res);
+  res.redirect("/login");
+});
+
+app.use(requireAuth);
 
 async function getPeriods() {
   const result = await pool.query("SELECT * FROM snapshot_periods ORDER BY period_date DESC");
@@ -59,6 +272,183 @@ async function getLatestPeriodValues(periodId) {
     [periodId]
   );
   return result.rows;
+}
+
+function formatDate(value) {
+  return dayjs(value).format("YYYY-MM-DD");
+}
+
+async function getPeriodSnapshot(periodId) {
+  const [periodRes, valuesRes] = await Promise.all([
+    pool.query("SELECT * FROM snapshot_periods WHERE id = $1", [periodId]),
+    pool.query("SELECT item_id, amount FROM snapshot_values WHERE period_id = $1", [periodId]),
+  ]);
+  if (!periodRes.rows.length) return null;
+  return {
+    period: periodRes.rows[0],
+    values: Object.fromEntries(valuesRes.rows.map((row) => [Number(row.item_id), toNumber(row.amount)])),
+  };
+}
+
+async function getBackupData() {
+  const [members, items, periods, values] = await Promise.all([
+    pool.query("SELECT id, name, is_active, created_at FROM members ORDER BY id ASC"),
+    pool.query(
+      `SELECT id, name, kind, asset_group, owner_member_id, is_active, created_at
+       FROM tracking_items
+       ORDER BY id ASC`
+    ),
+    pool.query("SELECT id, period_date, stock_pnl_manual, note, created_at FROM snapshot_periods ORDER BY period_date ASC"),
+    pool.query("SELECT id, period_id, item_id, amount, created_at FROM snapshot_values ORDER BY period_id ASC, item_id ASC"),
+  ]);
+  return {
+    exportedAt: new Date().toISOString(),
+    version: 1,
+    members: members.rows,
+    trackingItems: items.rows,
+    snapshotPeriods: periods.rows.map((row) => ({ ...row, period_date: formatDate(row.period_date) })),
+    snapshotValues: values.rows,
+  };
+}
+
+function csvCell(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+async function buildSnapshotsCsv() {
+  const result = await pool.query(
+    `SELECT
+      p.period_date,
+      p.note,
+      p.stock_pnl_manual,
+      i.name AS item_name,
+      i.kind,
+      i.asset_group,
+      m.name AS owner_member_name,
+      v.amount
+     FROM snapshot_periods p
+     JOIN snapshot_values v ON v.period_id = p.id
+     JOIN tracking_items i ON i.id = v.item_id
+     LEFT JOIN members m ON m.id = i.owner_member_id
+     ORDER BY p.period_date ASC, i.id ASC`
+  );
+  const rows = [["period_date", "note", "stock_pnl_manual", "item_name", "kind", "asset_group", "owner", "amount"]];
+  for (const row of result.rows) {
+    rows.push([
+      formatDate(row.period_date),
+      row.note || "",
+      row.stock_pnl_manual,
+      row.item_name,
+      row.kind,
+      row.asset_group || "",
+      row.owner_member_name || "共同",
+      row.amount,
+    ]);
+  }
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function ensureArray(value, name) {
+  if (!Array.isArray(value)) throw new Error(`${name} 必须是数组`);
+  return value;
+}
+
+function validateEntryPayload(body) {
+  const errors = [];
+  const periodDate = String(body.period_date || "").trim();
+  const parsedDate = new Date(`${periodDate}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodDate) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== periodDate) {
+    errors.push("请选择有效的统计日期。");
+  }
+
+  const numericFields = Object.keys(body).filter((key) => key === "stock_pnl_manual" || key.startsWith("item_"));
+  let hasNonZeroAmount = false;
+  for (const field of numericFields) {
+    const raw = String(body[field] ?? "").trim();
+    if (raw === "") continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      errors.push("金额字段只能填写数字。");
+      break;
+    }
+    if (value !== 0) hasNonZeroAmount = true;
+  }
+  if (!hasNonZeroAmount) {
+    errors.push("请至少填写一个非零金额，避免保存空快照。");
+  }
+
+  return errors;
+}
+
+async function resetSequence(client, tableName) {
+  await client.query(`SELECT setval(pg_get_serial_sequence('${tableName}', 'id'), COALESCE((SELECT MAX(id) FROM ${tableName}), 1), true)`);
+}
+
+async function importBackupData(data) {
+  const members = ensureArray(data.members, "members");
+  const items = ensureArray(data.trackingItems, "trackingItems");
+  const periods = ensureArray(data.snapshotPeriods, "snapshotPeriods");
+  const values = ensureArray(data.snapshotValues, "snapshotValues");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM snapshot_values");
+    await client.query("DELETE FROM snapshot_periods");
+    await client.query("DELETE FROM tracking_items");
+    await client.query("DELETE FROM members");
+
+    for (const member of members) {
+      await client.query(
+        `INSERT INTO members (id, name, is_active, created_at)
+         VALUES ($1, $2, $3, COALESCE($4::timestamp, NOW()))`,
+        [Number(member.id), String(member.name || "").trim(), member.is_active !== false, member.created_at || null]
+      );
+    }
+
+    for (const item of items) {
+      await client.query(
+        `INSERT INTO tracking_items (id, name, kind, asset_group, owner_member_id, is_active, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))`,
+        [
+          Number(item.id),
+          String(item.name || "").trim(),
+          item.kind,
+          item.kind === "asset" ? item.asset_group || "other" : null,
+          item.owner_member_id || null,
+          item.is_active !== false,
+          item.created_at || null,
+        ]
+      );
+    }
+
+    for (const period of periods) {
+      await client.query(
+        `INSERT INTO snapshot_periods (id, period_date, note, stock_pnl_manual, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))`,
+        [Number(period.id), period.period_date, period.note || "", toNumber(period.stock_pnl_manual), period.created_at || null]
+      );
+    }
+
+    for (const value of values) {
+      await client.query(
+        `INSERT INTO snapshot_values (id, period_id, item_id, amount, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5::timestamp, NOW()))`,
+        [Number(value.id), Number(value.period_id), Number(value.item_id), toNumber(value.amount), value.created_at || null]
+      );
+    }
+
+    await resetSequence(client, "members");
+    await resetSequence(client, "tracking_items");
+    await resetSequence(client, "snapshot_periods");
+    await resetSequence(client, "snapshot_values");
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 app.get("/", async (req, res, next) => {
@@ -176,6 +566,48 @@ app.get("/", async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+});
+
+app.get("/backup", (_req, res) => {
+  res.render("backup", { title: "备份", message: "", error: "" });
+});
+
+app.get("/backup/export.json", async (_req, res, next) => {
+  try {
+    const data = await getBackupData();
+    const filename = `family-asset-backup-${dayjs().format("YYYYMMDD-HHmmss")}.json`;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(JSON.stringify(data, null, 2));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/backup/export.csv", async (_req, res, next) => {
+  try {
+    const csv = await buildSnapshotsCsv();
+    const filename = `family-asset-snapshots-${dayjs().format("YYYYMMDD-HHmmss")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(`\uFEFF${csv}`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/backup/import", async (req, res) => {
+  try {
+    const raw = String(req.body.backup_json || "").trim();
+    if (!raw) {
+      return res.status(400).render("backup", { title: "备份", message: "", error: "请粘贴 JSON 备份内容。" });
+    }
+    const data = JSON.parse(raw);
+    await importBackupData(data);
+    res.render("backup", { title: "备份", message: "备份已导入，数据已恢复。", error: "" });
+  } catch (err) {
+    res.status(400).render("backup", { title: "备份", message: "", error: err.message || "导入失败，请检查备份内容。" });
   }
 });
 
@@ -519,7 +951,11 @@ app.post("/setup/templates/basic", async (req, res, next) => {
 
 app.get("/entry", async (req, res, next) => {
   try {
-    const config = await getConfig();
+    const selectedPeriodId = Number(req.query.period_id || 0);
+    const copyFromId = Number(req.query.copy_from || 0);
+    const sourcePeriodId = selectedPeriodId || copyFromId;
+    const selectedSnapshot = sourcePeriodId ? await getPeriodSnapshot(sourcePeriodId) : null;
+    const config = await getConfig(Boolean(selectedSnapshot));
     if (!config.members.length || !config.items.length) {
       return res.redirect("/setup");
     }
@@ -527,8 +963,14 @@ app.get("/entry", async (req, res, next) => {
     res.render("entry", {
       title: "录入",
       periods,
-      defaultDate: dayjs().format("YYYY-MM-DD"),
+      defaultDate: selectedSnapshot && selectedPeriodId ? formatDate(selectedSnapshot.period.period_date) : dayjs().format("YYYY-MM-DD"),
       config,
+      selectedPeriod: selectedSnapshot?.period || null,
+      entryValues: selectedSnapshot?.values || {},
+      entryNote: selectedSnapshot?.period?.note || "",
+      stockPnlManual: selectedSnapshot ? toNumber(selectedSnapshot.period.stock_pnl_manual) : 0,
+      isCopyMode: Boolean(copyFromId && selectedSnapshot),
+      errors: [],
     });
   } catch (err) {
     next(err);
@@ -538,6 +980,26 @@ app.get("/entry", async (req, res, next) => {
 app.post("/entry", async (req, res, next) => {
   const client = await pool.connect();
   try {
+    const validationErrors = validateEntryPayload(req.body);
+    if (validationErrors.length) {
+      const config = await getConfig(true);
+      const periods = await getPeriods();
+      return res.status(400).render("entry", {
+        title: "录入",
+        periods,
+        defaultDate: req.body.period_date || dayjs().format("YYYY-MM-DD"),
+        config,
+        selectedPeriod: null,
+        entryValues: Object.fromEntries(
+          config.items.map((item) => [Number(item.id), toNumber(req.body[`item_${item.id}`])])
+        ),
+        entryNote: req.body.note || "",
+        stockPnlManual: toNumber(req.body.stock_pnl_manual),
+        isCopyMode: false,
+        errors: validationErrors,
+      });
+    }
+
     const periodDate = req.body.period_date;
     const note = req.body.note || "";
 
@@ -555,9 +1017,10 @@ app.post("/entry", async (req, res, next) => {
     );
     const period = periodRes.rows[0];
 
-    const config = await getConfig();
+    const config = await getConfig(true);
     for (const item of config.items) {
       const field = `item_${item.id}`;
+      if (!Object.prototype.hasOwnProperty.call(req.body, field)) continue;
       await client.query(
         `INSERT INTO snapshot_values (period_id, item_id, amount)
          VALUES ($1, $2, $3)
@@ -575,6 +1038,19 @@ app.post("/entry", async (req, res, next) => {
     next(err);
   } finally {
     client.release();
+  }
+});
+
+app.post("/entry/periods/:id/delete", async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).send("无效的周期 ID");
+    }
+    await pool.query("DELETE FROM snapshot_periods WHERE id = $1", [id]);
+    res.redirect("/entry");
+  } catch (err) {
+    next(err);
   }
 });
 

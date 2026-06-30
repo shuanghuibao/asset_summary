@@ -13,12 +13,25 @@
 ```bash
 npm install
 cp .env.example .env
-# 设置 .env 内 DATABASE_URL
-npm run db:migrate
 npm run dev
 ```
 
+`npm run dev` 会自动：
+
+1. 使用 Docker Compose 启动本地 Postgres。
+2. 连接 `postgresql://asset_summary:asset_summary@localhost:5433/asset_summary`。
+3. 执行 `npm run db:migrate`。
+4. 启动开发服务。
+
 访问 `http://localhost:3000`。
+
+首次访问会要求创建管理员账号。之后使用管理员邮箱和密码登录。
+
+如果只想启动应用而不自动启动数据库，可使用：
+
+```bash
+npm run dev:app
+```
 
 ## 2. Data Formula
 
@@ -38,5 +51,6 @@ npm run dev
    - `family-asset-app` (Web Service, free)
    - `family-asset-db` (Postgres, free)
 4. 首次部署会执行 `npm run db:migrate`
+5. 打开站点 URL，按页面提示创建管理员账号
 
 Render 文档入口：[render.com](https://render.com/)

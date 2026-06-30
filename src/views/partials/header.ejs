@@ -15,6 +15,12 @@
         <a href="/">总览</a>
         <a href="/entry">录入</a>
         <a href="/trends">趋势</a>
+        <a href="/backup">备份</a>
+        <% if (authEnabled) { %>
+          <form method="POST" action="/logout" class="nav-form">
+            <button type="submit" class="nav-button">退出</button>
+          </form>
+        <% } %>
       </nav>
     </header>
     <section class="flow-wrap">

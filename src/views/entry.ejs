@@ -4,10 +4,24 @@
   <div class="section-header">
     <div>
       <h2>月度录入</h2>
-      <p class="muted">录入本期各科目余额。缺少科目时，可在本页快速新增。</p>
+      <% if (selectedPeriod && !isCopyMode) { %>
+        <p class="muted">正在编辑 <%= selectedPeriod.period_date.toISOString().slice(0, 10) %> 的历史快照。</p>
+      <% } else if (isCopyMode) { %>
+        <p class="muted">已复制历史快照数据，请调整日期和金额后保存为新一期。</p>
+      <% } else { %>
+        <p class="muted">录入本期各科目余额。缺少科目时，可在本页快速新增。</p>
+      <% } %>
     </div>
     <a href="/setup" class="btn-ghost">进入配置</a>
   </div>
+
+  <% if (errors && errors.length) { %>
+    <div class="alert error">
+      <% errors.forEach((error) => { %>
+        <p><%= error %></p>
+      <% }) %>
+    </div>
+  <% } %>
 
   <details class="add-item-panel compact-panel">
     <summary>新增科目</summary>
@@ -44,15 +58,15 @@
     </form>
   </details>
 
-  <form method="POST" action="/entry" class="form-grid">
+  <form method="POST" action="/entry" class="form-grid" id="entryForm">
     <label>统计日期
       <input name="period_date" type="date" value="<%= defaultDate %>" required />
     </label>
     <label>本期备注
-      <input name="note" type="text" placeholder="例如：年终奖到账" />
+      <input name="note" type="text" placeholder="例如：年终奖到账" value="<%= entryNote || '' %>" />
     </label>
     <label>本期投资收益 <span class="help-tip" data-tip="填写本期投资组合盈亏，用于计算总支出与隐含支出">?</span>
-      <input name="stock_pnl_manual" type="number" step="0.01" value="0" />
+      <input name="stock_pnl_manual" type="number" step="0.01" value="<%= stockPnlManual || 0 %>" />
     </label>
 
     <% config.members.forEach((member) => { %>
@@ -62,7 +76,8 @@
         <% memberItems.forEach((item) => { %>
           <label>
             <%= item.name %> <span class="kind-chip"><%= item.kind === "asset" ? "资产" : item.kind === "liability" ? "负债" : item.kind === "income" ? "收入" : "支出" %></span>
-            <input name="item_<%= item.id %>" type="number" step="0.01" value="0" />
+            <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
+            <input name="item_<%= item.id %>" type="number" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
           </label>
         <% }) %>
       </fieldset>
@@ -74,16 +89,22 @@
       <% commonItems.forEach((item) => { %>
         <label>
           <%= item.name %> <span class="kind-chip"><%= item.kind === "asset" ? "资产" : item.kind === "liability" ? "负债" : item.kind === "income" ? "收入" : "支出" %></span>
-          <input name="item_<%= item.id %>" type="number" step="0.01" value="0" />
+          <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
+          <input name="item_<%= item.id %>" type="number" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
         </label>
       <% }) %>
     </fieldset>
 
-    <button type="submit">保存并查看趋势</button>
+    <div class="actions">
+      <button type="submit"><%= selectedPeriod && !isCopyMode ? "保存历史快照" : "保存并查看趋势" %></button>
+      <button type="button" class="btn-ghost" id="clearEntryDraftBtn">清除草稿</button>
+      <span class="muted" id="entryDraftStatus"></span>
+    </div>
   </form>
 </section>
 
 <script>
+  window.__ENTRY_SHOULD_RESTORE_DRAFT__ = <%= !selectedPeriod && !isCopyMode && !(errors && errors.length) ? "true" : "false" %>;
   (() => {
     const kindSelect = document.getElementById("entryQuickKindSelect");
     const assetGroupField = document.getElementById("entryQuickAssetGroupField");
@@ -95,6 +116,7 @@
     refresh();
   })();
 </script>
+<script src="/entry.js"></script>
 
 <section class="card">
   <h2>已记录周期</h2>
@@ -104,8 +126,17 @@
     <ul class="period-list">
       <% periods.forEach((period) => { %>
         <li>
-          <strong><%= period.period_date.toISOString().slice(0, 10) %></strong>
-          <span><%= period.note || "无备注" %></span>
+          <div>
+            <strong><%= period.period_date.toISOString().slice(0, 10) %></strong>
+            <span><%= period.note || "无备注" %></span>
+          </div>
+          <div class="actions">
+            <a href="/entry?period_id=<%= period.id %>" class="btn-ghost">查看/编辑</a>
+            <a href="/entry?copy_from=<%= period.id %>" class="btn-ghost">复制</a>
+            <form method="POST" action="/entry/periods/<%= period.id %>/delete" class="inline-delete-form">
+              <button type="submit" class="btn-ghost danger">删除</button>
+            </form>
+          </div>
         </li>
       <% }) %>
     </ul>

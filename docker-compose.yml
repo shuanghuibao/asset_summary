@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: asset-summary-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: asset_summary
+      POSTGRES_PASSWORD: asset_summary
+      POSTGRES_DB: asset_summary
+    ports:
+      - "5433:5432"
+    volumes:
+      - asset-summary-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asset_summary -d asset_summary"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  asset-summary-postgres-data:

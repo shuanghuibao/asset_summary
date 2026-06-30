@@ -45,6 +45,7 @@ body {
 
 .topbar nav {
   display: flex;
+  align-items: center;
   gap: 16px;
 }
 
@@ -58,6 +59,22 @@ body {
 }
 
 .topbar a:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.nav-form {
+  margin: 0;
+}
+
+.nav-button {
+  background: transparent;
+  color: #334161;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.nav-button:hover {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -331,6 +348,17 @@ input {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+textarea {
+  width: 100%;
+  border: 1px solid #d8deea;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+  resize: vertical;
+}
+
 select {
   width: 100%;
   border: 1px solid #d8deea;
@@ -341,6 +369,7 @@ select {
 }
 
 input:focus,
+textarea:focus,
 select:focus {
   outline: none;
   border-color: #98abef;
@@ -481,6 +510,7 @@ button:disabled {
 
 .period-list li {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   border: 1px solid var(--line);
@@ -510,8 +540,24 @@ button:disabled {
   min-height: 18px;
 }
 
+.success {
+  color: var(--up);
+}
+
 .error {
   color: var(--down);
+}
+
+.alert {
+  border: 1px solid #f3d3d0;
+  border-radius: var(--radius-md);
+  background: #fff7f6;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.alert p {
+  margin: 0;
 }
 
 .badge-on,
@@ -534,8 +580,23 @@ button:disabled {
 
 .actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.inline-delete-form {
+  margin: 0;
+}
+
+.auth-container {
+  min-height: 100vh;
+  align-content: center;
+}
+
+.auth-card {
+  max-width: 460px;
+  margin: 0 auto;
 }
 
 .btn-ghost {

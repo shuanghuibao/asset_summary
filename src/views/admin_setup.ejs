@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><%= title %> - 家庭资产</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container auth-container">
+      <section class="card auth-card">
+        <h1>创建管理员账号</h1>
+        <p class="muted">首次使用前，请创建一个管理员账号。之后访问应用时使用该邮箱和密码登录。</p>
+        <% if (error) { %>
+          <p class="error"><%= error %></p>
+        <% } %>
+        <form method="POST" action="/admin/setup" class="form-grid">
+          <label>管理员邮箱
+            <input name="email" type="email" value="<%= email || '' %>" required autofocus autocomplete="username" />
+          </label>
+          <label>密码
+            <input name="password" type="password" required minlength="8" autocomplete="new-password" />
+          </label>
+          <label>确认密码
+            <input name="password_confirm" type="password" required minlength="8" autocomplete="new-password" />
+          </label>
+          <button type="submit">创建并进入</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
