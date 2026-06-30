@@ -2,12 +2,7 @@ const path = require("path");
 const express = require("express");
 const dayjs = require("dayjs");
 const { pool } = require("./config/db");
-const {
-  computeStockNetFlow,
-  computeMemberTotals,
-  computeHouseholdNetAssets,
-  toNumber,
-} = require("./services/calculations");
+const { toNumber } = require("./services/calculations");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -22,76 +17,159 @@ async function getPeriods() {
   return result.rows;
 }
 
-async function getPeriodBundle(periodId) {
-  const [periodRes, memberRes, householdRes] = await Promise.all([
-    pool.query("SELECT * FROM snapshot_periods WHERE id = $1", [periodId]),
-    pool.query("SELECT * FROM member_finance_snapshots WHERE period_id = $1 ORDER BY member", [periodId]),
-    pool.query("SELECT * FROM household_snapshots WHERE period_id = $1", [periodId]),
+async function getConfig() {
+  const [membersRes, itemsRes] = await Promise.all([
+    pool.query("SELECT * FROM members ORDER BY id ASC"),
+    pool.query(
+      `SELECT i.*, m.name AS owner_member_name
+       FROM tracking_items i
+       LEFT JOIN members m ON m.id = i.owner_member_id
+       WHERE i.is_active = TRUE
+       ORDER BY i.owner_member_id NULLS LAST, i.id ASC`
+    ),
   ]);
+
   return {
-    period: periodRes.rows[0],
-    members: memberRes.rows,
-    household: householdRes.rows[0],
+    members: membersRes.rows,
+    items: itemsRes.rows,
   };
 }
 
-async function getPreviousMemberSnapshot(member, currentPeriodDate) {
+async function getLatestPeriodValues(periodId) {
   const result = await pool.query(
-    `SELECT m.*
-      FROM member_finance_snapshots m
-      JOIN snapshot_periods p ON p.id = m.period_id
-     WHERE m.member = $1
-       AND p.period_date < $2
-     ORDER BY p.period_date DESC
-     LIMIT 1`,
-    [member, currentPeriodDate]
+    `SELECT v.amount, i.kind, i.name, i.owner_member_id, m.name AS member_name
+     FROM snapshot_values v
+     JOIN tracking_items i ON i.id = v.item_id
+     LEFT JOIN members m ON m.id = i.owner_member_id
+     WHERE v.period_id = $1`,
+    [periodId]
   );
-  return result.rows[0];
+  return result.rows;
 }
 
 app.get("/", async (req, res, next) => {
   try {
+    const config = await getConfig();
+    if (!config.members.length || !config.items.length) {
+      return res.render("overview", {
+        title: "总览",
+        setupRequired: true,
+        latest: null,
+        stats: null,
+        memberTotals: [],
+      });
+    }
+
     const periods = await getPeriods();
     if (!periods.length) {
       return res.render("overview", {
         title: "总览",
+        setupRequired: false,
         latest: null,
-        previous: null,
         stats: null,
+        memberTotals: [],
       });
     }
 
-    const latestBundle = await getPeriodBundle(periods[0].id);
-    const previousBundle = periods[1] ? await getPeriodBundle(periods[1].id) : null;
+    const latestValues = await getLatestPeriodValues(periods[0].id);
+    const previousValues = periods[1] ? await getLatestPeriodValues(periods[1].id) : [];
 
-    const memberTotals = latestBundle.members.map((row) => ({ member: row.member, ...computeMemberTotals(row) }));
-    const householdNetAssets = computeHouseholdNetAssets({
-      memberSnapshots: latestBundle.members,
-      householdSnapshot: latestBundle.household,
+    const latestAssets = latestValues
+      .filter((row) => row.kind === "asset" || row.kind === "stock_market_value")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+    const latestLiabilities = latestValues
+      .filter((row) => row.kind === "liability")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+    const latestIncome = latestValues
+      .filter((row) => row.kind === "income")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+    const latestExpense = latestValues
+      .filter((row) => row.kind === "expense")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+
+    const previousAssets = previousValues
+      .filter((row) => row.kind === "asset" || row.kind === "stock_market_value")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+    const previousLiabilities = previousValues
+      .filter((row) => row.kind === "liability")
+      .reduce((acc, row) => acc + toNumber(row.amount), 0);
+
+    const householdNetAssets = latestAssets - latestLiabilities;
+    const previousNetAssets = previousAssets - previousLiabilities;
+
+    const memberTotals = config.members.map((member) => {
+      const memberRows = latestValues.filter((row) => row.owner_member_id === member.id);
+      const income = memberRows
+        .filter((row) => row.kind === "income")
+        .reduce((acc, row) => acc + toNumber(row.amount), 0);
+      const assets = memberRows
+        .filter((row) => row.kind === "asset" || row.kind === "stock_market_value")
+        .reduce((acc, row) => acc + toNumber(row.amount), 0);
+      const liabilities = memberRows
+        .filter((row) => row.kind === "liability")
+        .reduce((acc, row) => acc + toNumber(row.amount), 0);
+      return {
+        member: member.name,
+        totalIncome: income,
+        totalAssets: assets,
+        totalLiabilities: liabilities,
+        netAssets: assets - liabilities,
+      };
     });
-
-    const previousNetAssets = previousBundle
-      ? computeHouseholdNetAssets({
-          memberSnapshots: previousBundle.members,
-          householdSnapshot: previousBundle.household,
-        })
-      : 0;
 
     const stats = {
       householdNetAssets,
       periodChange: householdNetAssets - previousNetAssets,
-      mortgage: toNumber(latestBundle.household?.remaining_mortgage_total),
-      monthlyMortgagePayment: toNumber(latestBundle.household?.monthly_mortgage_payment),
-      totalExpense: toNumber(latestBundle.household?.total_expense),
-      memberTotals,
+      totalIncome: latestIncome,
+      totalExpense: latestExpense,
+      totalAssets: latestAssets,
+      totalLiabilities: latestLiabilities,
     };
 
     res.render("overview", {
       title: "总览",
-      latest: latestBundle,
-      previous: previousBundle,
+      setupRequired: false,
+      latest: periods[0],
       stats,
+      memberTotals,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/setup", async (req, res, next) => {
+  try {
+    const config = await getConfig();
+    res.render("setup", { title: "Setup", config });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/setup/members", async (req, res, next) => {
+  try {
+    const names = String(req.body.member_names || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    for (const name of names) {
+      await pool.query("INSERT INTO members (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [name]);
+    }
+    res.redirect("/setup");
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/setup/items", async (req, res, next) => {
+  try {
+    await pool.query(
+      `INSERT INTO tracking_items (name, kind, owner_member_id)
+       VALUES ($1, $2, $3)`,
+      [req.body.item_name, req.body.kind, req.body.owner_member_id || null]
+    );
+    res.redirect("/setup");
   } catch (err) {
     next(err);
   }
@@ -99,11 +177,16 @@ app.get("/", async (req, res, next) => {
 
 app.get("/entry", async (req, res, next) => {
   try {
+    const config = await getConfig();
+    if (!config.members.length || !config.items.length) {
+      return res.redirect("/setup");
+    }
     const periods = await getPeriods();
     res.render("entry", {
       title: "录入",
       periods,
       defaultDate: dayjs().format("YYYY-MM-DD"),
+      config,
     });
   } catch (err) {
     next(err);
@@ -128,64 +211,18 @@ app.post("/entry", async (req, res, next) => {
     );
     const period = periodRes.rows[0];
 
-    const members = ["宝", "李"];
-    for (const member of members) {
-      const previous = await getPreviousMemberSnapshot(member, period.period_date);
-      const currentMarketValue = toNumber(req.body[`${member}_stock_fund_market_value`]);
-      const stockPnlManual = toNumber(req.body[`${member}_stock_pnl_manual`]);
-      const previousMarketValue = toNumber(previous?.stock_fund_market_value);
-      const stockNetFlowComputed = computeStockNetFlow(currentMarketValue, previousMarketValue, stockPnlManual);
-
+    const config = await getConfig();
+    for (const item of config.items) {
+      const field = `item_${item.id}`;
       await client.query(
-        `INSERT INTO member_finance_snapshots (
-          period_id, member, salary_income, bonus_income, housing_fund_income, cash_savings,
-          stock_fund_market_value, housing_fund_balance, credit_card_balance, stock_pnl_manual, stock_net_flow_computed
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-        ON CONFLICT (period_id, member)
+        `INSERT INTO snapshot_values (period_id, item_id, amount)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (period_id, item_id)
         DO UPDATE SET
-          salary_income = EXCLUDED.salary_income,
-          bonus_income = EXCLUDED.bonus_income,
-          housing_fund_income = EXCLUDED.housing_fund_income,
-          cash_savings = EXCLUDED.cash_savings,
-          stock_fund_market_value = EXCLUDED.stock_fund_market_value,
-          housing_fund_balance = EXCLUDED.housing_fund_balance,
-          credit_card_balance = EXCLUDED.credit_card_balance,
-          stock_pnl_manual = EXCLUDED.stock_pnl_manual,
-          stock_net_flow_computed = EXCLUDED.stock_net_flow_computed`,
-        [
-          period.id,
-          member,
-          toNumber(req.body[`${member}_salary_income`]),
-          toNumber(req.body[`${member}_bonus_income`]),
-          toNumber(req.body[`${member}_housing_fund_income`]),
-          toNumber(req.body[`${member}_cash_savings`]),
-          currentMarketValue,
-          toNumber(req.body[`${member}_housing_fund_balance`]),
-          toNumber(req.body[`${member}_credit_card_balance`]),
-          stockPnlManual,
-          stockNetFlowComputed,
-        ]
+          amount = EXCLUDED.amount`,
+        [period.id, item.id, toNumber(req.body[field])]
       );
     }
-
-    await client.query(
-      `INSERT INTO household_snapshots (
-        period_id, remaining_mortgage_total, monthly_mortgage_payment, total_expense, note
-      ) VALUES ($1,$2,$3,$4,$5)
-      ON CONFLICT (period_id)
-      DO UPDATE SET
-        remaining_mortgage_total = EXCLUDED.remaining_mortgage_total,
-        monthly_mortgage_payment = EXCLUDED.monthly_mortgage_payment,
-        total_expense = EXCLUDED.total_expense,
-        note = EXCLUDED.note`,
-      [
-        period.id,
-        toNumber(req.body.remaining_mortgage_total),
-        toNumber(req.body.monthly_mortgage_payment),
-        toNumber(req.body.total_expense),
-        req.body.household_note || "",
-      ]
-    );
 
     await client.query("COMMIT");
     res.redirect("/trends");
@@ -199,21 +236,20 @@ app.post("/entry", async (req, res, next) => {
 
 app.get("/trends", async (req, res, next) => {
   try {
+    const config = await getConfig();
+    if (!config.members.length || !config.items.length) {
+      return res.redirect("/setup");
+    }
+
     const result = await pool.query(
       `SELECT
         p.period_date,
-        m.member,
-        m.stock_fund_market_value,
-        m.stock_pnl_manual,
-        m.stock_net_flow_computed,
-        m.cash_savings,
-        m.housing_fund_balance,
-        m.credit_card_balance,
-        h.remaining_mortgage_total
+        i.kind,
+        v.amount
        FROM snapshot_periods p
-       JOIN member_finance_snapshots m ON m.period_id = p.id
-       LEFT JOIN household_snapshots h ON h.period_id = p.id
-       ORDER BY p.period_date ASC, m.member ASC`
+       JOIN snapshot_values v ON v.period_id = p.id
+       JOIN tracking_items i ON i.id = v.item_id
+       ORDER BY p.period_date ASC`
     );
 
     const byDate = new Map();
@@ -228,21 +264,25 @@ app.get("/trends", async (req, res, next) => {
         totalLiabilities: 0,
         netAssets: 0,
       };
-      item.stockMarketValue += toNumber(row.stock_fund_market_value);
-      item.stockPnl += toNumber(row.stock_pnl_manual);
-      item.stockNetFlow += toNumber(row.stock_net_flow_computed);
-      item.totalAssets +=
-        toNumber(row.cash_savings) + toNumber(row.stock_fund_market_value) + toNumber(row.housing_fund_balance);
-      item.totalLiabilities += toNumber(row.credit_card_balance);
-      item.mortgage = toNumber(row.remaining_mortgage_total);
+      const amount = toNumber(row.amount);
+      if (row.kind === "stock_market_value") item.stockMarketValue += amount;
+      if (row.kind === "stock_pnl") item.stockPnl += amount;
+      if (row.kind === "asset" || row.kind === "stock_market_value") item.totalAssets += amount;
+      if (row.kind === "liability") item.totalLiabilities += amount;
       byDate.set(key, item);
     }
 
-    const trendData = [...byDate.values()].map((row) => ({
-      ...row,
-      totalLiabilities: row.totalLiabilities + toNumber(row.mortgage),
-      netAssets: row.totalAssets - (row.totalLiabilities + toNumber(row.mortgage)),
-    }));
+    const sorted = [...byDate.values()].sort((a, b) => a.periodDate.localeCompare(b.periodDate));
+    let prevStockMarketValue = 0;
+    const trendData = sorted.map((row, index) => {
+      const inferredNetFlow = index === 0 ? 0 : row.stockMarketValue - prevStockMarketValue - row.stockPnl;
+      prevStockMarketValue = row.stockMarketValue;
+      return {
+        ...row,
+        stockNetFlow: inferredNetFlow,
+        netAssets: row.totalAssets - row.totalLiabilities,
+      };
+    });
 
     res.render("trends", { title: "趋势", trendData });
   } catch (err) {

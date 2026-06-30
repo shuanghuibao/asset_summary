@@ -2,7 +2,7 @@
 
 <section class="card">
   <h2>月度录入</h2>
-  <p class="muted">股票口径：手工输入“本期股票盈亏”，系统自动反推“本月股票净投入”。</p>
+  <p class="muted">以下字段来自 Setup 配置。股票口径：手工输入“股票盈亏（stock_pnl）”，系统自动反推净投入。</p>
   <form method="POST" action="/entry" class="form-grid">
     <label>统计日期
       <input name="period_date" type="date" value="<%= defaultDate %>" required />
@@ -11,26 +11,28 @@
       <input name="note" type="text" placeholder="例如：年终奖到账" />
     </label>
 
-    <% ["宝", "李"].forEach((member) => { %>
+    <% config.members.forEach((member) => { %>
       <fieldset>
-        <legend><%= member %></legend>
-        <label>工资收入<input name="<%= member %>_salary_income" type="number" step="0.01" value="0" /></label>
-        <label>奖金收入<input name="<%= member %>_bonus_income" type="number" step="0.01" value="0" /></label>
-        <label>公积金收入<input name="<%= member %>_housing_fund_income" type="number" step="0.01" value="0" /></label>
-        <label>存款/稳健理财<input name="<%= member %>_cash_savings" type="number" step="0.01" value="0" /></label>
-        <label>股票/基金市值<input name="<%= member %>_stock_fund_market_value" type="number" step="0.01" value="0" /></label>
-        <label>本期股票盈亏<input name="<%= member %>_stock_pnl_manual" type="number" step="0.01" value="0" /></label>
-        <label>公积金余额<input name="<%= member %>_housing_fund_balance" type="number" step="0.01" value="0" /></label>
-        <label>信用卡余额<input name="<%= member %>_credit_card_balance" type="number" step="0.01" value="0" /></label>
+        <legend><%= member.name %></legend>
+        <% const memberItems = config.items.filter((item) => item.owner_member_id === member.id); %>
+        <% memberItems.forEach((item) => { %>
+          <label>
+            <%= item.name %> <span class="muted">(<%= item.kind %>)</span>
+            <input name="item_<%= item.id %>" type="number" step="0.01" value="0" />
+          </label>
+        <% }) %>
       </fieldset>
     <% }) %>
 
     <fieldset>
       <legend>共同</legend>
-      <label>剩余贷款总计<input name="remaining_mortgage_total" type="number" step="0.01" value="0" /></label>
-      <label>当前贷款（元/月）<input name="monthly_mortgage_payment" type="number" step="0.01" value="0" /></label>
-      <label>共计支出<input name="total_expense" type="number" step="0.01" value="0" /></label>
-      <label>说明<input name="household_note" type="text" placeholder="可选" /></label>
+      <% const commonItems = config.items.filter((item) => !item.owner_member_id); %>
+      <% commonItems.forEach((item) => { %>
+        <label>
+          <%= item.name %> <span class="muted">(<%= item.kind %>)</span>
+          <input name="item_<%= item.id %>" type="number" step="0.01" value="0" />
+        </label>
+      <% }) %>
     </fieldset>
 
     <button type="submit">保存并查看趋势</button>

@@ -1,11 +1,15 @@
 <%- include("partials/header", { title }) %>
 
 <section class="card">
-  <% if (!latest || !stats) { %>
+  <% if (setupRequired) { %>
+    <h2>请先完成 Setup</h2>
+    <p>先配置家庭成员和资产分类科目，再开始录入每月数据。</p>
+    <a href="/setup">去 Setup</a>
+  <% } else if (!latest || !stats) { %>
     <h2>暂无数据</h2>
     <p>先去录入页添加本月资产数据。</p>
   <% } else { %>
-    <h2><%= latest.period.period_date.toISOString().slice(0, 10) %> 总览</h2>
+    <h2><%= latest.period_date.toISOString().slice(0, 10) %> 总览</h2>
     <div class="kpis">
       <div class="kpi">
         <span>家庭净资产</span>
@@ -18,12 +22,20 @@
         </strong>
       </div>
       <div class="kpi">
-        <span>剩余贷款</span>
-        <strong>¥ <%= stats.mortgage.toLocaleString("zh-CN") %></strong>
+        <span>总资产</span>
+        <strong>¥ <%= stats.totalAssets.toLocaleString("zh-CN") %></strong>
       </div>
       <div class="kpi">
-        <span>月供</span>
-        <strong>¥ <%= stats.monthlyMortgagePayment.toLocaleString("zh-CN") %></strong>
+        <span>总负债</span>
+        <strong>¥ <%= stats.totalLiabilities.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期收入</span>
+        <strong>¥ <%= stats.totalIncome.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期支出</span>
+        <strong>¥ <%= stats.totalExpense.toLocaleString("zh-CN") %></strong>
       </div>
     </div>
   <% } %>
@@ -31,7 +43,7 @@
 
 <section class="card">
   <h2>成员结构</h2>
-  <% if (!stats || !stats.memberTotals.length) { %>
+  <% if (!memberTotals || !memberTotals.length) { %>
     <p>暂无成员数据。</p>
   <% } else { %>
     <table>
@@ -45,7 +57,7 @@
         </tr>
       </thead>
       <tbody>
-        <% stats.memberTotals.forEach((row) => { %>
+        <% memberTotals.forEach((row) => { %>
           <tr>
             <td><%= row.member %></td>
             <td>¥ <%= row.totalIncome.toLocaleString("zh-CN") %></td>

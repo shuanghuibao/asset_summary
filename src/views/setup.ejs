@@ -1,0 +1,68 @@
+<%- include("partials/header", { title }) %>
+
+<section class="card">
+  <h2>初始化配置</h2>
+  <p class="muted">先配置家庭成员和追踪科目。后续录入页会按你的配置自动生成。</p>
+</section>
+
+<section class="card">
+  <h3>1) 添加家庭成员</h3>
+  <form method="POST" action="/setup/members" class="inline-form">
+    <input name="member_names" type="text" placeholder="例如：我, 配偶（逗号分隔）" required />
+    <button type="submit">保存成员</button>
+  </form>
+  <ul class="period-list">
+    <% config.members.forEach((member) => { %>
+      <li><strong><%= member.name %></strong></li>
+    <% }) %>
+  </ul>
+</section>
+
+<section class="card">
+  <h3>2) 添加追踪科目</h3>
+  <form method="POST" action="/setup/items" class="form-grid">
+    <label>科目名称
+      <input name="item_name" type="text" placeholder="例如：招商银行活期、房贷、工资收入" required />
+    </label>
+    <label>科目类型
+      <select name="kind" required>
+        <option value="asset">资产</option>
+        <option value="liability">负债</option>
+        <option value="income">收入</option>
+        <option value="expense">支出</option>
+        <option value="stock_market_value">股票市值</option>
+        <option value="stock_pnl">股票盈亏（手工）</option>
+      </select>
+    </label>
+    <label>归属成员（可选）
+      <select name="owner_member_id">
+        <option value="">共同</option>
+        <% config.members.forEach((member) => { %>
+          <option value="<%= member.id %>"><%= member.name %></option>
+        <% }) %>
+      </select>
+    </label>
+    <button type="submit">添加科目</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>科目</th>
+        <th>类型</th>
+        <th>归属</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% config.items.forEach((item) => { %>
+        <tr>
+          <td><%= item.name %></td>
+          <td><%= item.kind %></td>
+          <td><%= item.owner_member_name || "共同" %></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</section>
+
+<%- include("partials/footer") %>

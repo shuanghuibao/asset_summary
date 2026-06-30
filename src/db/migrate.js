@@ -2,11 +2,41 @@ const { pool } = require("../config/db");
 
 async function migrate() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS members (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tracking_items (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('asset', 'liability', 'income', 'expense', 'stock_market_value', 'stock_pnl')),
+      owner_member_id INTEGER REFERENCES members(id) ON DELETE CASCADE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS snapshot_periods (
       id SERIAL PRIMARY KEY,
       period_date DATE NOT NULL UNIQUE,
       note TEXT,
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapshot_values (
+      id SERIAL PRIMARY KEY,
+      period_id INTEGER NOT NULL REFERENCES snapshot_periods(id) ON DELETE CASCADE,
+      item_id INTEGER NOT NULL REFERENCES tracking_items(id) ON DELETE CASCADE,
+      amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (period_id, item_id)
     );
   `);
 

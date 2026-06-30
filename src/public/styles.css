@@ -117,10 +117,20 @@ label {
 }
 
 input {
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 14px;
+}
+
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  background: #fff;
 }
 
 fieldset {
@@ -145,6 +155,12 @@ button {
   border: none;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.inline-form {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .period-list {
