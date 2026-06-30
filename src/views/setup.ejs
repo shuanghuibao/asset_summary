@@ -1,68 +1,149 @@
 <%- include("partials/header", { title }) %>
 
-<section class="card">
+<section class="card hero">
   <h2>初始化配置</h2>
-  <p class="muted">先配置家庭成员和追踪科目。后续录入页会按你的配置自动生成。</p>
+  <p class="muted">成员和科目都可以随时增改，不是一次性步骤。比如 5 月 2 张银行卡，6 月新增第 3 张卡，这是正常场景。</p>
+  <div class="inline-form">
+    <button type="button" id="applyTemplateBtn">一键套用推荐模板</button>
+    <span class="muted">模板会补齐常见科目，如银行账户、投资账户、房贷、工资，不会覆盖你已有科目。</span>
+  </div>
 </section>
 
 <section class="card">
-  <h3>1) 添加家庭成员</h3>
-  <form method="POST" action="/setup/members" class="inline-form">
-    <input name="member_names" type="text" placeholder="例如：我, 配偶（逗号分隔）" required />
-    <button type="submit">保存成员</button>
+  <div class="section-header">
+    <div>
+      <h3>1) 家庭成员</h3>
+      <p class="muted">管理家庭成员。成员有关联科目时不会被直接删除，可先停用。</p>
+    </div>
+    <button type="button" class="btn-ghost" id="toggleMemberEditModeBtn">编辑</button>
+  </div>
+  <form method="POST" action="/setup/members" class="inline-form" id="membersForm">
+    <input name="member_names" type="text" placeholder="例如：我, 配偶。请使用逗号分隔" required autocomplete="off" />
+    <button type="submit" id="membersSubmit">保存成员</button>
   </form>
-  <ul class="period-list">
-    <% config.members.forEach((member) => { %>
-      <li><strong><%= member.name %></strong></li>
-    <% }) %>
-  </ul>
+  <table id="membersTable">
+    <thead>
+      <tr>
+        <th>成员</th>
+        <th>状态</th>
+        <th id="memberDeleteHeader" hidden>删除</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% config.members.forEach((member) => { %>
+        <tr>
+          <td><%= member.name %></td>
+          <td><%= member.is_active ? "启用" : "停用" %></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+  <div class="save-bar" id="memberSaveBar" hidden>
+    <span class="muted" id="memberSaveHint">你有未保存的成员修改</span>
+    <button type="button" id="saveMembersBtn">保存成员</button>
+  </div>
 </section>
 
 <section class="card">
-  <h3>2) 添加追踪科目</h3>
-  <form method="POST" action="/setup/items" class="form-grid">
-    <label>科目名称
-      <input name="item_name" type="text" placeholder="例如：招商银行活期、房贷、工资收入" required />
-    </label>
-    <label>科目类型
-      <select name="kind" required>
-        <option value="asset">资产</option>
-        <option value="liability">负债</option>
-        <option value="income">收入</option>
-        <option value="expense">支出</option>
-        <option value="stock_market_value">股票市值</option>
-        <option value="stock_pnl">股票盈亏（手工）</option>
-      </select>
-    </label>
-    <label>归属成员（可选）
-      <select name="owner_member_id">
-        <option value="">共同</option>
-        <% config.members.forEach((member) => { %>
-          <option value="<%= member.id %>"><%= member.name %></option>
-        <% }) %>
-      </select>
-    </label>
-    <button type="submit">添加科目</button>
-  </form>
+  <div class="section-header">
+    <div>
+      <h3>2) 科目管理</h3>
+      <p class="muted">管理资产、负债、收入与支出科目。进入编辑模式后可批量保存。</p>
+    </div>
+    <button type="button" class="btn-ghost" id="toggleEditModeBtn">编辑</button>
+  </div>
 
-  <table>
+  <div class="table-toolbar">
+    <div class="toolbar-left">
+      <input type="search" id="itemSearchInput" placeholder="搜索科目名称" class="toolbar-search" />
+      <label class="inline-checkbox">
+        <input type="checkbox" id="showInactiveItems" />
+        显示已停用
+      </label>
+    </div>
+    <span class="muted" id="editSummaryLabel">浏览模式</span>
+  </div>
+
+  <table id="itemsTable">
     <thead>
       <tr>
         <th>科目</th>
         <th>类型</th>
+        <th>子类</th>
         <th>归属</th>
+        <th>状态</th>
+        <th id="tableDeleteHeader" hidden>删除</th>
       </tr>
     </thead>
     <tbody>
       <% config.items.forEach((item) => { %>
         <tr>
           <td><%= item.name %></td>
-          <td><%= item.kind %></td>
+          <td><%= item.kind === "asset" ? "资产" : item.kind === "liability" ? "负债" : item.kind === "income" ? "收入" : "支出" %></td>
+          <td><%= item.asset_group === "cash" ? "现金存款" : item.asset_group === "investment" ? "投资" : item.asset_group === "housing_fund" ? "公积金" : item.asset_group === "other" ? "其他" : "-" %></td>
           <td><%= item.owner_member_name || "共同" %></td>
+          <td><%= item.is_active ? "启用" : "停用" %></td>
         </tr>
       <% }) %>
     </tbody>
   </table>
+  <div class="save-bar" id="saveBar" hidden>
+    <span class="muted" id="saveHint">你有未保存的修改</span>
+    <button type="button" id="saveAllBtn">保存</button>
+  </div>
+
+  <details class="add-item-panel">
+    <summary>新增科目</summary>
+    <form method="POST" action="/setup/items" class="form-grid" id="itemsForm">
+      <label>科目名称
+        <input name="item_name" type="text" placeholder="例如：招商银行活期、房贷、工资收入" required autocomplete="off" />
+      </label>
+      <label>科目类型
+        <select name="kind" id="kindSelect" required>
+          <option value="asset">资产</option>
+          <option value="liability">负债</option>
+          <option value="income">收入</option>
+          <option value="expense">支出</option>
+        </select>
+      </label>
+      <label id="assetGroupField">资产子类
+        <select name="asset_group" id="assetGroupSelect">
+          <option value="cash">现金/存款</option>
+          <option value="investment">投资</option>
+          <option value="housing_fund">公积金类</option>
+          <option value="other">其他资产</option>
+        </select>
+      </label>
+      <label>归属成员
+        <select name="owner_member_id" id="ownerMemberSelect">
+          <option value="">共同</option>
+          <% config.members.forEach((member) => { %>
+            <option value="<%= member.id %>"><%= member.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <button type="submit" id="itemsSubmit">添加科目</button>
+    </form>
+  </details>
 </section>
+
+<section class="card">
+  <h3>3) 下一步</h3>
+  <% const activeItemsCount = config.items.filter((item) => item.is_active).length; %>
+  <% if (!config.members.length || !activeItemsCount) { %>
+    <p class="muted">请至少添加 1 位成员和 1 个启用科目后再进入录入。</p>
+    <button type="button" disabled>去录入</button>
+  <% } else { %>
+    <p class="muted">配置已就绪，可以开始录入本期数据。</p>
+    <a href="/entry" class="btn-primary-link">去录入</a>
+  <% } %>
+</section>
+
+<p class="muted status" id="setupStatus"></p>
+
+<script>
+  window.__SETUP_CONFIG__ = <%- JSON.stringify(config) %>;
+</script>
+<script src="/setup.js"></script>
 
 <%- include("partials/footer") %>

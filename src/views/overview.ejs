@@ -1,10 +1,28 @@
 <%- include("partials/header", { title }) %>
 
 <section class="card">
+  <div class="view-switch-row">
+    <h2>统计视角</h2>
+    <form method="GET" action="/" class="view-switch-form">
+      <select name="view" id="overviewViewSelect">
+        <option value="family" <%= viewMode === "family" ? "selected" : "" %>>家庭</option>
+        <option value="member" <%= viewMode === "member" ? "selected" : "" %>>个人</option>
+      </select>
+      <select name="member_id" id="overviewMemberSelect" <%= viewMode === "member" ? "" : "disabled" %>>
+        <% members.forEach((member) => { %>
+          <option value="<%= member.id %>" <%= selectedMemberId === member.id ? "selected" : "" %>><%= member.name %></option>
+        <% }) %>
+      </select>
+      <button type="submit">应用</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
   <% if (setupRequired) { %>
-    <h2>请先完成 Setup</h2>
+    <h2>请先完成配置</h2>
     <p>先配置家庭成员和资产分类科目，再开始录入每月数据。</p>
-    <a href="/setup">去 Setup</a>
+    <a href="/setup">去配置</a>
   <% } else if (!latest || !stats) { %>
     <h2>暂无数据</h2>
     <p>先去录入页添加本月资产数据。</p>
@@ -34,8 +52,28 @@
         <strong>¥ <%= stats.totalIncome.toLocaleString("zh-CN") %></strong>
       </div>
       <div class="kpi">
-        <span>本期支出</span>
-        <strong>¥ <%= stats.totalExpense.toLocaleString("zh-CN") %></strong>
+        <span>本期股票盈亏</span>
+        <strong class="<%= stats.stockPnlManual >= 0 ? 'up' : 'down' %>">¥ <%= stats.stockPnlManual.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>已记录支出 <span class="help-tip" data-tip="你在支出类科目中手动录入的金额">?</span></span>
+        <strong>¥ <%= stats.totalExpenseManual.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>总支出 <span class="help-tip" data-tip="根据本期收入、投资收益与净资产变化计算">?</span></span>
+        <% if (stats.totalExpense === null) { %>
+          <strong class="muted">需要至少两期数据</strong>
+        <% } else { %>
+          <strong>¥ <%= stats.totalExpense.toLocaleString("zh-CN") %></strong>
+        <% } %>
+      </div>
+      <div class="kpi">
+        <span>隐含支出 <span class="help-tip" data-tip="总支出减去已记录支出后的金额">?</span></span>
+        <% if (stats.implicitExpense === null) { %>
+          <strong class="muted">-</strong>
+        <% } else { %>
+          <strong class="<%= stats.implicitExpense >= 0 ? 'down' : 'up' %>">¥ <%= stats.implicitExpense.toLocaleString("zh-CN") %></strong>
+        <% } %>
       </div>
     </div>
   <% } %>
@@ -70,5 +108,18 @@
     </table>
   <% } %>
 </section>
+
+<script>
+  (() => {
+    const viewSelect = document.getElementById("overviewViewSelect");
+    const memberSelect = document.getElementById("overviewMemberSelect");
+    if (!viewSelect || !memberSelect) return;
+    const refreshMemberState = () => {
+      memberSelect.disabled = viewSelect.value !== "member";
+    };
+    viewSelect.addEventListener("change", refreshMemberState);
+    refreshMemberState();
+  })();
+</script>
 
 <%- include("partials/footer") %>

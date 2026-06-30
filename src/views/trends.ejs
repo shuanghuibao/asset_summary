@@ -1,20 +1,50 @@
 <%- include("partials/header", { title }) %>
 
 <section class="card">
-  <h2>趋势分析</h2>
-  <p class="muted">图表口径：净资产、股票市值、股票盈亏、股票净投入均按月统计。</p>
+  <div class="view-switch-row">
+    <h2>趋势分析</h2>
+    <form method="GET" action="/trends" class="view-switch-form">
+      <select name="view" id="trendsViewSelect">
+        <option value="family" <%= viewMode === "family" ? "selected" : "" %>>家庭</option>
+        <option value="member" <%= viewMode === "member" ? "selected" : "" %>>个人</option>
+      </select>
+      <select name="member_id" id="trendsMemberSelect" <%= viewMode === "member" ? "" : "disabled" %>>
+        <% members.forEach((member) => { %>
+          <option value="<%= member.id %>" <%= selectedMemberId === member.id ? "selected" : "" %>><%= member.name %></option>
+        <% }) %>
+      </select>
+      <button type="submit">应用</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <p class="muted">按统一分类体系展示净资产、投资与支出变化趋势。</p>
   <% if (!trendData.length) { %>
     <p>暂无数据，请先去录入页添加本月数据。</p>
   <% } else { %>
     <div class="chart-grid">
       <canvas id="netAssetChart"></canvas>
       <canvas id="stockChart"></canvas>
+      <canvas id="expenseChart"></canvas>
       <canvas id="structureChart"></canvas>
     </div>
     <script>
       window.__TREND_DATA__ = <%- JSON.stringify(trendData) %>;
     </script>
     <script src="/trends.js"></script>
+    <script>
+      (() => {
+        const viewSelect = document.getElementById("trendsViewSelect");
+        const memberSelect = document.getElementById("trendsMemberSelect");
+        if (!viewSelect || !memberSelect) return;
+        const refreshMemberState = () => {
+          memberSelect.disabled = viewSelect.value !== "member";
+        };
+        viewSelect.addEventListener("change", refreshMemberState);
+        refreshMemberState();
+      })();
+    </script>
   <% } %>
 </section>
 

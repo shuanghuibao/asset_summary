@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "chart.js": "^4.5.1",
     "dayjs": "^1.11.21",
     "dotenv": "^17.4.2",
     "ejs": "^6.0.1",
