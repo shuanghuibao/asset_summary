@@ -1,0 +1,62 @@
+<%- include("partials/header", { title }) %>
+
+<section class="card">
+  <% if (!latest || !stats) { %>
+    <h2>暂无数据</h2>
+    <p>先去录入页添加本月资产数据。</p>
+  <% } else { %>
+    <h2><%= latest.period.period_date.toISOString().slice(0, 10) %> 总览</h2>
+    <div class="kpis">
+      <div class="kpi">
+        <span>家庭净资产</span>
+        <strong>¥ <%= stats.householdNetAssets.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期变化</span>
+        <strong class="<%= stats.periodChange >= 0 ? 'up' : 'down' %>">
+          ¥ <%= stats.periodChange.toLocaleString("zh-CN") %>
+        </strong>
+      </div>
+      <div class="kpi">
+        <span>剩余贷款</span>
+        <strong>¥ <%= stats.mortgage.toLocaleString("zh-CN") %></strong>
+      </div>
+      <div class="kpi">
+        <span>月供</span>
+        <strong>¥ <%= stats.monthlyMortgagePayment.toLocaleString("zh-CN") %></strong>
+      </div>
+    </div>
+  <% } %>
+</section>
+
+<section class="card">
+  <h2>成员结构</h2>
+  <% if (!stats || !stats.memberTotals.length) { %>
+    <p>暂无成员数据。</p>
+  <% } else { %>
+    <table>
+      <thead>
+        <tr>
+          <th>成员</th>
+          <th>收入</th>
+          <th>资产</th>
+          <th>负债</th>
+          <th>净资产</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% stats.memberTotals.forEach((row) => { %>
+          <tr>
+            <td><%= row.member %></td>
+            <td>¥ <%= row.totalIncome.toLocaleString("zh-CN") %></td>
+            <td>¥ <%= row.totalAssets.toLocaleString("zh-CN") %></td>
+            <td>¥ <%= row.totalLiabilities.toLocaleString("zh-CN") %></td>
+            <td>¥ <%= row.netAssets.toLocaleString("zh-CN") %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+</section>
+
+<%- include("partials/footer") %>

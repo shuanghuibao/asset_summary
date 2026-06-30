@@ -1,0 +1,21 @@
+<%- include("partials/header", { title }) %>
+
+<section class="card">
+  <h2>趋势分析</h2>
+  <p class="muted">图表口径：净资产、股票市值、股票盈亏、股票净投入均按月统计。</p>
+  <% if (!trendData.length) { %>
+    <p>暂无数据，请先去录入页添加本月数据。</p>
+  <% } else { %>
+    <div class="chart-grid">
+      <canvas id="netAssetChart"></canvas>
+      <canvas id="stockChart"></canvas>
+      <canvas id="structureChart"></canvas>
+    </div>
+    <script>
+      window.__TREND_DATA__ = <%- JSON.stringify(trendData) %>;
+    </script>
+    <script src="/trends.js"></script>
+  <% } %>
+</section>
+
+<%- include("partials/footer") %>
