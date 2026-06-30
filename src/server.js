@@ -381,6 +381,72 @@ function validateEntryPayload(body) {
   return errors;
 }
 
+function buildTrendAnomalies(trendData, { isMemberView }) {
+  const anomalies = [];
+  if (!trendData.length) return anomalies;
+
+  if (trendData.length < 2) {
+    anomalies.push({
+      level: "info",
+      message: "当前只有一期快照，净资产变化、总支出、隐含支出和投资净投入需要至少两期数据才能可靠计算。",
+    });
+  }
+
+  if (isMemberView) {
+    anomalies.push({
+      level: "info",
+      message: "个人视角仅统计归属该成员的科目，不分摊共同资产、共同负债；期级投资收益暂不归属到个人。",
+    });
+  }
+
+  const latest = trendData[trendData.length - 1];
+  const previous = trendData[trendData.length - 2] || null;
+  if (!previous) return anomalies;
+
+  if (latest.totalExpense !== null && latest.totalExpense < 0) {
+    anomalies.push({
+      level: "warning",
+      message: "本期总支出为负，资产增长可能无法由收入和投资收益解释，请复核资产、负债、收入和投资收益录入。",
+    });
+  }
+
+  if (latest.implicitExpense !== null && latest.implicitExpense < 0) {
+    anomalies.push({
+      level: "warning",
+      message: "本期隐含支出为负，可能存在收入、投资收益、市值或资产负债录入不一致。",
+    });
+  }
+
+  const previousNetAssets = previous.netAssets;
+  if (previousNetAssets !== 0 && latest.periodChange !== null) {
+    const netAssetChangeRate = Math.abs(latest.periodChange / previousNetAssets);
+    if (Math.abs(latest.periodChange) >= 10000 && netAssetChangeRate > 0.3) {
+      anomalies.push({
+        level: "warning",
+        message: "本期净资产较上期波动超过 30%，建议复核是否存在漏填、重复填或一次性大额变动。",
+      });
+    }
+  }
+
+  if (latest.stockNetFlow !== null) {
+    const marketValueChange = latest.stockMarketValueChange ?? 0;
+    if (Math.abs(latest.stockNetFlow) >= Math.max(Math.abs(marketValueChange) * 0.8, 10000)) {
+      anomalies.push({
+        level: "warning",
+        message: "本期投资净投入较大，请确认是否存在追加、赎回，或投资收益、市值录入偏差。",
+      });
+    }
+    if (latest.stockPnl === 0 && Math.abs(marketValueChange) >= 10000) {
+      anomalies.push({
+        level: "warning",
+        message: "投资市值变化明显但本期投资收益为 0，请确认是否已录入本期投资盈亏。",
+      });
+    }
+  }
+
+  return anomalies;
+}
+
 async function resetSequence(client, tableName) {
   await client.query(`SELECT setval(pg_get_serial_sequence('${tableName}', 'id'), COALESCE((SELECT MAX(id) FROM ${tableName}), 1), true)`);
 }
@@ -1078,18 +1144,21 @@ app.get("/trends", async (req, res, next) => {
     const selectedMemberId = Number(req.query.member_id || 0);
     const memberExists = config.members.some((m) => m.id === selectedMemberId);
     const effectiveViewMode = viewMode === "member" && memberExists ? "member" : "family";
+    const selectedMember = config.members.find((m) => m.id === selectedMemberId) || null;
+    const isMemberView = effectiveViewMode === "member";
 
     const byDate = new Map();
     for (const row of result.rows) {
-      if (effectiveViewMode === "member" && row.owner_member_id !== selectedMemberId) {
+      if (isMemberView && row.owner_member_id !== selectedMemberId) {
         continue;
       }
       const key = dayjs(row.period_date).format("YYYY-MM-DD");
       const item = byDate.get(key) || {
         periodDate: key,
         stockMarketValue: 0,
-        stockPnl: toNumber(row.stock_pnl_manual),
-        stockNetFlow: 0,
+        stockPnl: isMemberView ? null : toNumber(row.stock_pnl_manual),
+        stockMarketValueChange: null,
+        stockNetFlow: null,
         totalIncome: 0,
         totalExpenseManual: 0,
         totalExpense: null,
@@ -1111,15 +1180,18 @@ app.get("/trends", async (req, res, next) => {
     let prevStockMarketValue = 0;
     let prevNetAssets = null;
     const trendData = sorted.map((row, index) => {
-      const inferredNetFlow = index === 0 ? 0 : row.stockMarketValue - prevStockMarketValue - row.stockPnl;
+      const stockMarketValueChange = index === 0 ? null : row.stockMarketValue - prevStockMarketValue;
+      const inferredNetFlow =
+        stockMarketValueChange === null || row.stockPnl === null ? null : stockMarketValueChange - row.stockPnl;
       prevStockMarketValue = row.stockMarketValue;
       const netAssets = row.totalAssets - row.totalLiabilities;
       const periodChange = prevNetAssets === null ? null : netAssets - prevNetAssets;
-      const totalExpense = periodChange === null ? null : row.totalIncome + row.stockPnl - periodChange;
+      const totalExpense = periodChange === null || row.stockPnl === null ? null : row.totalIncome + row.stockPnl - periodChange;
       const implicitExpense = totalExpense === null ? null : totalExpense - row.totalExpenseManual;
       prevNetAssets = netAssets;
       return {
         ...row,
+        stockMarketValueChange,
         stockNetFlow: inferredNetFlow,
         netAssets,
         periodChange,
@@ -1127,10 +1199,21 @@ app.get("/trends", async (req, res, next) => {
         implicitExpense,
       };
     });
+    const latestSummary = trendData[trendData.length - 1] || null;
+    const anomalies = buildTrendAnomalies(trendData, { isMemberView });
+    const trendContext = {
+      viewLabel: isMemberView && selectedMember ? `${selectedMember.name}个人` : "家庭",
+      netAssetLabel: isMemberView && selectedMember ? `${selectedMember.name}净资产` : "家庭净资产",
+      isMemberView,
+      hasDerivedMetrics: !isMemberView && trendData.length >= 2,
+    };
 
     res.render("trends", {
       title: "趋势",
       trendData,
+      latestSummary,
+      anomalies,
+      trendContext,
       members: config.members,
       viewMode: effectiveViewMode,
       selectedMemberId,

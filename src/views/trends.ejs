@@ -18,6 +18,91 @@
   </div>
 </section>
 
+<% const formatCurrency = (value) => value === null || value === undefined ? null : `¥ ${Number(value).toLocaleString("zh-CN")}`; %>
+<% const signedClass = (value) => value === null || value === undefined ? "muted kpi-na" : value >= 0 ? "up" : "down"; %>
+
+<% if (anomalies && anomalies.length) { %>
+  <section class="card">
+    <h2>趋势提示</h2>
+    <div class="trend-alert-list">
+      <% anomalies.forEach((item) => { %>
+        <div class="alert <%= item.level === 'warning' ? 'alert-warning' : 'alert-info' %>">
+          <p><%= item.message %></p>
+        </div>
+      <% }) %>
+    </div>
+  </section>
+<% } %>
+
+<% if (latestSummary) { %>
+  <section class="card">
+    <div class="section-header">
+      <div>
+        <h2><%= latestSummary.periodDate %> 趋势摘要</h2>
+        <p class="muted">快速查看最新一期的核心变化和可复核指标。</p>
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="kpi">
+        <span><%= trendContext.netAssetLabel %></span>
+        <strong><%= formatCurrency(latestSummary.netAssets) %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期净资产变化 <span class="help-tip" data-tip="本期净资产减去上一期净资产">?</span></span>
+        <% if (latestSummary.periodChange === null) { %>
+          <strong class="muted kpi-na">需至少两期</strong>
+        <% } else { %>
+          <strong class="<%= signedClass(latestSummary.periodChange) %>"><%= formatCurrency(latestSummary.periodChange) %></strong>
+        <% } %>
+      </div>
+      <div class="kpi">
+        <span>总资产</span>
+        <strong><%= formatCurrency(latestSummary.totalAssets) %></strong>
+      </div>
+      <div class="kpi">
+        <span>总负债</span>
+        <strong><%= formatCurrency(latestSummary.totalLiabilities) %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期收入</span>
+        <strong><%= formatCurrency(latestSummary.totalIncome) %></strong>
+      </div>
+      <div class="kpi">
+        <span>本期投资收益 <span class="help-tip" data-tip="家庭视角使用录入页填写的本期投资收益；个人视角暂不拆分">?</span></span>
+        <% if (latestSummary.stockPnl === null) { %>
+          <strong class="muted kpi-na">个人视角不适用</strong>
+        <% } else { %>
+          <strong class="<%= signedClass(latestSummary.stockPnl) %>"><%= formatCurrency(latestSummary.stockPnl) %></strong>
+        <% } %>
+      </div>
+      <div class="kpi">
+        <span>投资净投入 <span class="help-tip" data-tip="本期投资市值减去上期投资市值，再减去本期投资收益">?</span></span>
+        <% if (latestSummary.stockNetFlow === null) { %>
+          <strong class="muted kpi-na">不适用</strong>
+        <% } else { %>
+          <strong class="<%= signedClass(latestSummary.stockNetFlow) %>"><%= formatCurrency(latestSummary.stockNetFlow) %></strong>
+        <% } %>
+      </div>
+      <div class="kpi">
+        <span>总支出 <span class="help-tip" data-tip="本期收入加投资收益，再减去本期净资产变化">?</span></span>
+        <% if (latestSummary.totalExpense === null) { %>
+          <strong class="muted kpi-na">不适用</strong>
+        <% } else { %>
+          <strong class="<%= latestSummary.totalExpense < 0 ? 'down' : '' %>"><%= formatCurrency(latestSummary.totalExpense) %></strong>
+        <% } %>
+      </div>
+      <div class="kpi">
+        <span>隐含支出 <span class="help-tip" data-tip="总支出减去已记录支出，用于发现未记录或口径不一致的支出">?</span></span>
+        <% if (latestSummary.implicitExpense === null) { %>
+          <strong class="muted kpi-na">不适用</strong>
+        <% } else { %>
+          <strong class="<%= latestSummary.implicitExpense < 0 ? 'down' : '' %>"><%= formatCurrency(latestSummary.implicitExpense) %></strong>
+        <% } %>
+      </div>
+    </div>
+  </section>
+<% } %>
+
 <section class="card">
   <p class="muted">按统一分类体系展示净资产、投资与支出变化趋势。</p>
   <% if (!trendData.length) { %>
@@ -31,21 +116,36 @@
     </div>
     <script>
       window.__TREND_DATA__ = <%- JSON.stringify(trendData) %>;
+      window.__TREND_CONTEXT__ = <%- JSON.stringify(trendContext) %>;
     </script>
     <script src="/trends.js"></script>
-    <script>
-      (() => {
-        const viewSelect = document.getElementById("trendsViewSelect");
-        const memberSelect = document.getElementById("trendsMemberSelect");
-        if (!viewSelect || !memberSelect) return;
-        const refreshMemberState = () => {
-          memberSelect.disabled = viewSelect.value !== "member";
-        };
-        viewSelect.addEventListener("change", refreshMemberState);
-        refreshMemberState();
-      })();
-    </script>
+    <details class="metric-legend">
+      <summary>指标口径说明</summary>
+      <ul>
+        <li>净资产 = 总资产 - 总负债。</li>
+        <li>投资市值 = 资产子类为“投资”的科目金额合计。</li>
+        <li>投资净投入 = 本期投资市值 - 上期投资市值 - 本期投资收益。</li>
+        <li>总支出 = 本期收入 + 本期投资收益 - 本期净资产变化；隐含支出 = 总支出 - 已记录支出。</li>
+        <li>首期快照缺少上期对比，因此变化、投资净投入、总支出和隐含支出均不适用。</li>
+      </ul>
+    </details>
+    <% if (trendContext.isMemberView) { %>
+      <p class="member-view-notice">个人视角只统计归属到当前成员的科目，不自动分摊共同资产、共同负债、共同收入或共同支出；投资收益为期级字段，本轮不拆分到个人。</p>
+    <% } %>
   <% } %>
 </section>
+
+<script>
+  (() => {
+    const viewSelect = document.getElementById("trendsViewSelect");
+    const memberSelect = document.getElementById("trendsMemberSelect");
+    if (!viewSelect || !memberSelect) return;
+    const refreshMemberState = () => {
+      memberSelect.disabled = viewSelect.value !== "member";
+    };
+    viewSelect.addEventListener("change", refreshMemberState);
+    refreshMemberState();
+  })();
+</script>
 
 <%- include("partials/footer") %>

@@ -1,5 +1,7 @@
 (function renderTrendCharts() {
   const rows = Array.isArray(window.__TREND_DATA__) ? window.__TREND_DATA__ : [];
+  const trendContext = window.__TREND_CONTEXT__ || {};
+  const isMemberView = Boolean(trendContext.isMemberView);
   const chartGrid = document.querySelector(".chart-grid");
 
   function showChartError(message) {
@@ -38,7 +40,7 @@
       labels,
       datasets: [
         {
-          label: "家庭净资产",
+          label: trendContext.netAssetLabel || "家庭净资产",
           data: rows.map((x) => value(x, "netAssets")),
           borderColor: "#4e79a7",
           backgroundColor: "rgba(78,121,167,0.12)",
@@ -49,31 +51,37 @@
     options: lineBaseOptions,
   });
 
+  const stockDatasets = [
+    {
+      label: `${trendContext.viewLabel || "家庭"}投资市值`,
+      type: "line",
+      data: rows.map((x) => value(x, "stockMarketValue")),
+      borderColor: "#59a14f",
+      yAxisID: "y",
+    },
+  ];
+  if (!isMemberView) {
+    stockDatasets.push(
+      {
+        label: "本期投资收益",
+        data: rows.map((x) => value(x, "stockPnl")),
+        backgroundColor: "#4e79a7",
+        yAxisID: "y1",
+      },
+      {
+        label: "本期净投入",
+        data: rows.map((x) => value(x, "stockNetFlow")),
+        backgroundColor: "#f28e2b",
+        yAxisID: "y1",
+      }
+    );
+  }
+
   createChart("stockChart", {
     type: "bar",
     data: {
       labels,
-      datasets: [
-        {
-          label: "投资市值",
-          type: "line",
-          data: rows.map((x) => value(x, "stockMarketValue")),
-          borderColor: "#59a14f",
-          yAxisID: "y",
-        },
-        {
-          label: "本期投资收益",
-          data: rows.map((x) => value(x, "stockPnl")),
-          backgroundColor: "#4e79a7",
-          yAxisID: "y1",
-        },
-        {
-          label: "本期净投入",
-          data: rows.map((x) => value(x, "stockNetFlow")),
-          backgroundColor: "#f28e2b",
-          yAxisID: "y1",
-        },
-      ],
+      datasets: stockDatasets,
     },
     options: {
       ...lineBaseOptions,
@@ -84,36 +92,41 @@
     },
   });
 
+  const expenseDatasets = [];
+  if (!isMemberView) {
+    expenseDatasets.push(
+      {
+        label: "总支出",
+        data: rows.map((x) => value(x, "totalExpense")),
+        borderColor: "#8e5ea2",
+        backgroundColor: "rgba(142,94,162,0.12)",
+        spanGaps: true,
+        tension: 0.25,
+      },
+      {
+        label: "隐含支出",
+        data: rows.map((x) => value(x, "implicitExpense")),
+        borderColor: "#e15759",
+        backgroundColor: "rgba(225,87,89,0.12)",
+        spanGaps: true,
+        tension: 0.25,
+      }
+    );
+  }
+  expenseDatasets.push({
+    label: "已记录支出",
+    data: rows.map((x) => value(x, "totalExpenseManual")),
+    borderColor: "#4e79a7",
+    backgroundColor: "rgba(78,121,167,0.10)",
+    spanGaps: true,
+    tension: 0.25,
+  });
+
   createChart("expenseChart", {
     type: "line",
     data: {
       labels,
-      datasets: [
-        {
-          label: "总支出",
-          data: rows.map((x) => value(x, "totalExpense")),
-          borderColor: "#8e5ea2",
-          backgroundColor: "rgba(142,94,162,0.12)",
-          spanGaps: true,
-          tension: 0.25,
-        },
-        {
-          label: "隐含支出",
-          data: rows.map((x) => value(x, "implicitExpense")),
-          borderColor: "#e15759",
-          backgroundColor: "rgba(225,87,89,0.12)",
-          spanGaps: true,
-          tension: 0.25,
-        },
-        {
-          label: "已记录支出",
-          data: rows.map((x) => value(x, "totalExpenseManual")),
-          borderColor: "#4e79a7",
-          backgroundColor: "rgba(78,121,167,0.10)",
-          spanGaps: true,
-          tension: 0.25,
-        },
-      ],
+      datasets: expenseDatasets,
     },
     options: lineBaseOptions,
   });
@@ -124,12 +137,12 @@
       labels,
       datasets: [
         {
-          label: "总资产",
+          label: `${trendContext.viewLabel || "家庭"}总资产`,
           data: rows.map((x) => value(x, "totalAssets")),
           backgroundColor: "#76b7b2",
         },
         {
-          label: "总负债",
+          label: `${trendContext.viewLabel || "家庭"}总负债`,
           data: rows.map((x) => value(x, "totalLiabilities")),
           backgroundColor: "#e15759",
         },

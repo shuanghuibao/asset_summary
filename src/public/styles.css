@@ -560,6 +560,57 @@ button:disabled {
   margin: 0;
 }
 
+.alert-info {
+  border-color: #c9dcff;
+  background: #f5f8ff;
+  color: #294fc2;
+}
+
+.alert-warning {
+  border-color: #f6d7a8;
+  background: #fffbf0;
+  color: #8a4b0f;
+}
+
+.trend-alert-list {
+  display: grid;
+  gap: 8px;
+}
+
+.kpi-na {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.metric-legend {
+  margin-top: 14px;
+  border: 1px solid #e8edf7;
+  border-radius: var(--radius-md);
+  background: #fbfcff;
+  padding: 10px 12px;
+}
+
+.metric-legend summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #344054;
+}
+
+.metric-legend ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: #475467;
+}
+
+.member-view-notice {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #dbe3f5;
+  border-radius: var(--radius-md);
+  background: #f7f9ff;
+  color: #475467;
+}
+
 .badge-on,
 .badge-off {
   display: inline-block;
