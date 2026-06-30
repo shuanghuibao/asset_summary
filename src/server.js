@@ -406,6 +406,29 @@ async function getConfig(userId, includeInactive = false) {
   };
 }
 
+function parseItemIdSet(value, validItemIds) {
+  return new Set(
+    String(value || "")
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((itemId) => Number.isInteger(itemId) && validItemIds.has(itemId))
+  );
+}
+
+async function getTrendExcludedItemIds(userId) {
+  const result = await pool.query("SELECT trend_excluded_item_ids FROM admin_users WHERE id = $1", [userId]);
+  return result.rows[0]?.trend_excluded_item_ids || [];
+}
+
+async function saveTrendExcludedItemIds(userId, excludedItemIds) {
+  await pool.query(
+    `UPDATE admin_users
+     SET trend_excluded_item_ids = $1::int[], updated_at = NOW()
+     WHERE id = $2`,
+    [excludedItemIds, userId]
+  );
+}
+
 async function getLatestPeriodValues(userId, periodId) {
   const result = await pool.query(
     `SELECT v.amount, i.kind, i.asset_group, i.name, i.owner_member_id, m.name AS member_name
@@ -1374,11 +1397,18 @@ app.get("/trends", async (req, res, next) => {
     if (!config.members.length || !config.items.length) {
       return res.redirect("/setup");
     }
+    const validItemIds = new Set(config.items.map((item) => Number(item.id)));
+    const hasScopeQuery = Object.prototype.hasOwnProperty.call(req.query, "excluded_item_ids");
+    const savedExcludedItemIds = await getTrendExcludedItemIds(userId);
+    const excludedItemIds = hasScopeQuery
+      ? parseItemIdSet(req.query.excluded_item_ids, validItemIds)
+      : parseItemIdSet(savedExcludedItemIds.join(","), validItemIds);
 
     const result = await pool.query(
       `SELECT
         p.period_date,
         p.stock_pnl_manual,
+        i.id AS item_id,
         i.kind,
         i.asset_group,
         i.owner_member_id,
@@ -1401,6 +1431,9 @@ app.get("/trends", async (req, res, next) => {
     const byDate = new Map();
     for (const row of result.rows) {
       if (isMemberView && row.owner_member_id !== selectedMemberId) {
+        continue;
+      }
+      if (excludedItemIds.has(Number(row.item_id))) {
         continue;
       }
       const key = dayjs(row.period_date).format("YYYY-MM-DD");
@@ -1451,6 +1484,28 @@ app.get("/trends", async (req, res, next) => {
       };
     });
     const latestSummary = trendData[trendData.length - 1] || null;
+    const memberNameById = new Map(config.members.map((member) => [Number(member.id), member.name]));
+    const memberAssetTotals = new Map(config.members.map((member) => [Number(member.id), 0]));
+    const sharedAssetKey = "shared";
+    memberAssetTotals.set(sharedAssetKey, 0);
+    if (!isMemberView && latestSummary) {
+      for (const row of result.rows) {
+        const key = dayjs(row.period_date).format("YYYY-MM-DD");
+        if (key !== latestSummary.periodDate || row.kind !== "asset" || excludedItemIds.has(Number(row.item_id))) {
+          continue;
+        }
+        const ownerKey = row.owner_member_id ? Number(row.owner_member_id) : sharedAssetKey;
+        memberAssetTotals.set(ownerKey, (memberAssetTotals.get(ownerKey) || 0) + toNumber(row.amount));
+      }
+    }
+    const latestAssetComposition = isMemberView
+      ? []
+      : [...memberAssetTotals.entries()]
+          .map(([ownerKey, amount]) => ({
+            label: ownerKey === sharedAssetKey ? "共同" : memberNameById.get(ownerKey) || "未知成员",
+            amount,
+          }))
+          .filter((item) => item.amount > 0);
     const anomalies = buildTrendAnomalies(trendData, { isMemberView });
     const trendContext = {
       viewLabel: isMemberView && selectedMember ? `${selectedMember.name}个人` : "家庭",
@@ -1462,13 +1517,40 @@ app.get("/trends", async (req, res, next) => {
     res.render("trends", {
       title: "趋势",
       trendData,
+      latestAssetComposition,
       latestSummary,
       anomalies,
       trendContext,
       members: config.members,
       viewMode: effectiveViewMode,
       selectedMemberId,
+      scopeItems: config.items,
+      excludedItemIds: [...excludedItemIds],
+      excludedItemIdsParam: [...excludedItemIds].join(","),
+      hasScopeQuery,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/trends/scope", async (req, res, next) => {
+  try {
+    const userId = currentUserId(req);
+    const config = await getConfig(userId);
+    const validItemIds = new Set(config.items.map((item) => Number(item.id)));
+    const excludedItemIds =
+      req.body.scope_action === "reset" ? [] : [...parseItemIdSet(req.body.excluded_item_ids, validItemIds)];
+    await saveTrendExcludedItemIds(userId, excludedItemIds);
+
+    const params = new URLSearchParams();
+    const viewMode = req.body.view === "member" ? "member" : "family";
+    params.set("view", viewMode);
+    const selectedMemberId = Number(req.body.member_id || 0);
+    if (viewMode === "member" && config.members.some((member) => Number(member.id) === selectedMemberId)) {
+      params.set("member_id", String(selectedMemberId));
+    }
+    res.redirect(`/trends?${params.toString()}`);
   } catch (err) {
     next(err);
   }

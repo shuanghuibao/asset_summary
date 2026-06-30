@@ -31,6 +31,10 @@ async function migrate() {
     ALTER TABLE admin_users
     ALTER COLUMN is_admin SET NOT NULL;
   `);
+  await pool.query(`
+    ALTER TABLE admin_users
+    ADD COLUMN IF NOT EXISTS trend_excluded_item_ids INTEGER[] NOT NULL DEFAULT '{}';
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS members (

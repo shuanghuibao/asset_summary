@@ -4,8 +4,10 @@
 
   const draftKey = "familyAssetEntryDraft";
   const statusEl = document.getElementById("entryDraftStatus");
+  const changeSummaryEl = document.getElementById("entryChangeSummary");
   const clearBtn = document.getElementById("clearEntryDraftBtn");
   const shouldRestoreDraft = Boolean(window.__ENTRY_SHOULD_RESTORE_DRAFT__);
+  let initialValues = {};
 
   function setStatus(message) {
     if (statusEl) statusEl.textContent = message;
@@ -13,6 +15,16 @@
 
   function formToObject() {
     return Object.fromEntries(new FormData(form).entries());
+  }
+
+  function updateChangeSummary() {
+    if (!changeSummaryEl) return;
+    const current = formToObject();
+    const changedCount = Object.entries(current).filter(([name, value]) => {
+      if (!name.startsWith("item_") && name !== "stock_pnl_manual" && name !== "period_date" && name !== "note") return false;
+      return String(value ?? "") !== String(initialValues[name] ?? "");
+    }).length;
+    changeSummaryEl.textContent = changedCount ? `有 ${changedCount} 项修改待保存` : "尚未修改";
   }
 
   function restoreDraft() {
@@ -26,6 +38,7 @@
         if (field && "value" in field) field.value = value;
       }
       setStatus(`已恢复 ${draft.savedAt || ""} 的本地草稿`);
+      updateChangeSummary();
     } catch (_err) {
       localStorage.removeItem(draftKey);
     }
@@ -38,6 +51,7 @@
     };
     localStorage.setItem(draftKey, JSON.stringify(payload));
     setStatus("草稿已自动保存");
+    updateChangeSummary();
   }
 
   function validateBeforeSubmit() {
@@ -61,7 +75,9 @@
     return errors;
   }
 
+  initialValues = formToObject();
   restoreDraft();
+  updateChangeSummary();
 
   form.addEventListener("input", saveDraft);
   form.addEventListener("change", saveDraft);
@@ -81,10 +97,21 @@
   });
 
   document.querySelectorAll(".inline-delete-form").forEach((deleteForm) => {
-    deleteForm.addEventListener("submit", (event) => {
-      if (!confirm("确定删除这个历史快照吗？该操作会同步删除对应明细。")) {
-        event.preventDefault();
-      }
+    let confirmed = false;
+    deleteForm.addEventListener("submit", async (event) => {
+      if (confirmed) return;
+      event.preventDefault();
+      const periodDate = deleteForm.dataset.periodDate || "该周期";
+      const note = deleteForm.dataset.periodNote || "无备注";
+      const ok = await window.confirmDanger({
+        title: "删除历史快照",
+        message: `将删除 ${periodDate} 快照及所有明细，趋势图会重新计算。`,
+        details: [`备注：${note}`, "该操作不可撤销，请确认已经不再需要这期记录。"],
+        confirmText: "确认删除",
+      });
+      if (!ok) return;
+      confirmed = true;
+      deleteForm.submit();
     });
   });
 })();

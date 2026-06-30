@@ -56,11 +56,11 @@
         <strong class="<%= stats.stockPnlManual >= 0 ? 'up' : 'down' %>">¥ <%= stats.stockPnlManual.toLocaleString("zh-CN") %></strong>
       </div>
       <div class="kpi">
-        <span>已记录支出 <span class="help-tip" data-tip="你在支出类科目中手动录入的金额">?</span></span>
+        <span>已记录支出 <button type="button" class="help-tip" data-tip="你在支出类科目中手动录入的金额，用于和推算支出做对比。" aria-label="已记录支出口径说明">?</button></span>
         <strong>¥ <%= stats.totalExpenseManual.toLocaleString("zh-CN") %></strong>
       </div>
       <div class="kpi">
-        <span>总支出 <span class="help-tip" data-tip="根据本期收入、投资收益与净资产变化计算">?</span></span>
+        <span>推算总支出 <button type="button" class="help-tip" data-tip="估算值。公式：本期收入 + 本期投资收益 - 本期净资产变化。需至少两期快照，且资产负债、收入和投资收益录入口径一致。" aria-label="推算总支出口径说明">?</button></span>
         <% if (stats.totalExpense === null) { %>
           <strong class="muted">需要至少两期数据</strong>
         <% } else { %>
@@ -68,7 +68,7 @@
         <% } %>
       </div>
       <div class="kpi">
-        <span>隐含支出 <span class="help-tip" data-tip="总支出减去已记录支出后的金额">?</span></span>
+        <span>隐含支出估算 <button type="button" class="help-tip" data-tip="估算值。公式：推算总支出 - 已记录支出。它用于提示可能未记录或口径不一致的支出，不等同于真实流水。" aria-label="隐含支出估算说明">?</button></span>
         <% if (stats.implicitExpense === null) { %>
           <strong class="muted">-</strong>
         <% } else { %>
@@ -76,6 +76,7 @@
         <% } %>
       </div>
     </div>
+    <p class="derived-metric-note">推算指标依赖连续快照和一致录入口径，适合用于月度复盘和异常排查，不应视为逐笔支出流水。</p>
   <% } %>
 </section>
 

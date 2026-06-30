@@ -1,6 +1,9 @@
 (function renderTrendCharts() {
   const rows = Array.isArray(window.__TREND_DATA__) ? window.__TREND_DATA__ : [];
   const trendContext = window.__TREND_CONTEXT__ || {};
+  const memberAssetComposition = Array.isArray(window.__MEMBER_ASSET_COMPOSITION__)
+    ? window.__MEMBER_ASSET_COMPOSITION__
+    : [];
   const isMemberView = Boolean(trendContext.isMemberView);
   const chartGrid = document.querySelector(".chart-grid");
 
@@ -131,6 +134,42 @@
     options: lineBaseOptions,
   });
 
+  if (!isMemberView && memberAssetComposition.length) {
+    const assetTotal = memberAssetComposition.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    createChart("memberAssetChart", {
+      type: "pie",
+      data: {
+        labels: memberAssetComposition.map((item) => item.label),
+        datasets: [
+          {
+            label: "成员资产组成",
+            data: memberAssetComposition.map((item) => Number(item.amount || 0)),
+            backgroundColor: ["#4e79a7", "#59a14f", "#f28e2b", "#76b7b2", "#edc949", "#af7aa1"],
+          },
+        ],
+      },
+      options: {
+        ...lineBaseOptions,
+        plugins: {
+          ...lineBaseOptions.plugins,
+          title: {
+            display: true,
+            text: "最新一期成员资产组成",
+          },
+          tooltip: {
+            callbacks: {
+              label: (context) => {
+                const amount = Number(context.raw || 0);
+                const percent = assetTotal ? ` (${((amount / assetTotal) * 100).toFixed(1)}%)` : "";
+                return `${context.label}: ${amount.toLocaleString("zh-CN")}${percent}`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   createChart("structureChart", {
     type: "bar",
     data: {
@@ -143,14 +182,34 @@
         },
         {
           label: `${trendContext.viewLabel || "家庭"}总负债`,
-          data: rows.map((x) => value(x, "totalLiabilities")),
+          data: rows.map((x) => {
+            const amount = value(x, "totalLiabilities");
+            return amount === null ? null : -amount;
+          }),
           backgroundColor: "#e15759",
         },
       ],
     },
     options: {
       ...lineBaseOptions,
-      scales: { x: { stacked: true }, y: { stacked: true } },
+      plugins: {
+        ...lineBaseOptions.plugins,
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const label = context.dataset.label ? `${context.dataset.label}: ` : "";
+              return `${label}${Math.abs(Number(context.raw || 0)).toLocaleString("zh-CN")}`;
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          ticks: {
+            callback: (tickValue) => Math.abs(Number(tickValue)).toLocaleString("zh-CN"),
+          },
+        },
+      },
     },
   });
 })();

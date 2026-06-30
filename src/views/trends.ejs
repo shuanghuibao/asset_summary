@@ -4,6 +4,9 @@
   <div class="view-switch-row">
     <h2>趋势分析</h2>
     <form method="GET" action="/trends" class="view-switch-form">
+      <% if (hasScopeQuery && excludedItemIdsParam) { %>
+        <input type="hidden" name="excluded_item_ids" value="<%= excludedItemIdsParam %>">
+      <% } %>
       <select name="view" id="trendsViewSelect">
         <option value="family" <%= viewMode === "family" ? "selected" : "" %>>家庭</option>
         <option value="member" <%= viewMode === "member" ? "selected" : "" %>>个人</option>
@@ -20,6 +23,10 @@
 
 <% const formatCurrency = (value) => value === null || value === undefined ? null : `¥ ${Number(value).toLocaleString("zh-CN")}`; %>
 <% const signedClass = (value) => value === null || value === undefined ? "muted kpi-na" : value >= 0 ? "up" : "down"; %>
+<% const excludedSet = new Set((excludedItemIds || []).map(Number)); %>
+<% const kindLabel = (kind) => ({ asset: "资产", liability: "负债", income: "收入", expense: "支出" }[kind] || kind); %>
+<% const assetGroupLabel = (group) => ({ cash: "现金/存款", investment: "投资", housing_fund: "公积金", other: "其他" }[group] || ""); %>
+<% const includedScopeCount = (scopeItems || []).filter((item) => !excludedSet.has(Number(item.id))).length; %>
 
 <% if (anomalies && anomalies.length) { %>
   <section class="card">
@@ -48,7 +55,7 @@
         <strong><%= formatCurrency(latestSummary.netAssets) %></strong>
       </div>
       <div class="kpi">
-        <span>本期净资产变化 <span class="help-tip" data-tip="本期净资产减去上一期净资产">?</span></span>
+        <span>本期净资产变化 <button type="button" class="help-tip" data-tip="本期净资产减去上一期净资产。首期快照缺少上期对比，因此不适用。" aria-label="本期净资产变化说明">?</button></span>
         <% if (latestSummary.periodChange === null) { %>
           <strong class="muted kpi-na">需至少两期</strong>
         <% } else { %>
@@ -68,7 +75,7 @@
         <strong><%= formatCurrency(latestSummary.totalIncome) %></strong>
       </div>
       <div class="kpi">
-        <span>本期投资收益 <span class="help-tip" data-tip="家庭视角使用录入页填写的本期投资收益；个人视角暂不拆分">?</span></span>
+        <span>本期投资收益 <button type="button" class="help-tip" data-tip="家庭视角使用录入页填写的本期投资收益；个人视角暂不拆分到个人。" aria-label="本期投资收益说明">?</button></span>
         <% if (latestSummary.stockPnl === null) { %>
           <strong class="muted kpi-na">个人视角不适用</strong>
         <% } else { %>
@@ -76,7 +83,7 @@
         <% } %>
       </div>
       <div class="kpi">
-        <span>投资净投入 <span class="help-tip" data-tip="本期投资市值减去上期投资市值，再减去本期投资收益">?</span></span>
+        <span>投资净投入估算 <button type="button" class="help-tip" data-tip="估算值。公式：本期投资市值 - 上期投资市值 - 本期投资收益。用于判断追加或赎回，依赖投资市值和投资收益录入口径一致。" aria-label="投资净投入估算说明">?</button></span>
         <% if (latestSummary.stockNetFlow === null) { %>
           <strong class="muted kpi-na">不适用</strong>
         <% } else { %>
@@ -84,7 +91,7 @@
         <% } %>
       </div>
       <div class="kpi">
-        <span>总支出 <span class="help-tip" data-tip="本期收入加投资收益，再减去本期净资产变化">?</span></span>
+        <span>推算总支出 <button type="button" class="help-tip" data-tip="估算值。公式：本期收入 + 本期投资收益 - 本期净资产变化。它不是逐笔流水，仅用于复盘和异常排查。" aria-label="推算总支出说明">?</button></span>
         <% if (latestSummary.totalExpense === null) { %>
           <strong class="muted kpi-na">不适用</strong>
         <% } else { %>
@@ -92,7 +99,7 @@
         <% } %>
       </div>
       <div class="kpi">
-        <span>隐含支出 <span class="help-tip" data-tip="总支出减去已记录支出，用于发现未记录或口径不一致的支出">?</span></span>
+        <span>隐含支出估算 <button type="button" class="help-tip" data-tip="估算值。公式：推算总支出 - 已记录支出。用于发现未记录或口径不一致的支出，不等同于真实消费流水。" aria-label="隐含支出估算说明">?</button></span>
         <% if (latestSummary.implicitExpense === null) { %>
           <strong class="muted kpi-na">不适用</strong>
         <% } else { %>
@@ -100,6 +107,7 @@
         <% } %>
       </div>
     </div>
+    <p class="derived-metric-note">推算指标依赖连续快照和一致录入口径，适合用于月度复盘和异常排查。</p>
   </section>
 <% } %>
 
@@ -112,20 +120,25 @@
       <canvas id="netAssetChart"></canvas>
       <canvas id="stockChart"></canvas>
       <canvas id="expenseChart"></canvas>
+      <% if (!trendContext.isMemberView && latestAssetComposition.length) { %>
+        <canvas id="memberAssetChart"></canvas>
+      <% } %>
       <canvas id="structureChart"></canvas>
     </div>
     <script>
       window.__TREND_DATA__ = <%- JSON.stringify(trendData) %>;
       window.__TREND_CONTEXT__ = <%- JSON.stringify(trendContext) %>;
+      window.__MEMBER_ASSET_COMPOSITION__ = <%- JSON.stringify(latestAssetComposition) %>;
     </script>
     <script src="/trends.js"></script>
     <details class="metric-legend">
       <summary>指标口径说明</summary>
       <ul>
         <li>净资产 = 总资产 - 总负债。</li>
+        <li>成员资产组成 = 最新一期内各成员名下资产合计；无归属资产显示为“共同”。</li>
         <li>投资市值 = 资产子类为“投资”的科目金额合计。</li>
-        <li>投资净投入 = 本期投资市值 - 上期投资市值 - 本期投资收益。</li>
-        <li>总支出 = 本期收入 + 本期投资收益 - 本期净资产变化；隐含支出 = 总支出 - 已记录支出。</li>
+        <li>投资净投入估算 = 本期投资市值 - 上期投资市值 - 本期投资收益。</li>
+        <li>推算总支出 = 本期收入 + 本期投资收益 - 本期净资产变化；隐含支出估算 = 推算总支出 - 已记录支出。</li>
         <li>首期快照缺少上期对比，因此变化、投资净投入、总支出和隐含支出均不适用。</li>
       </ul>
     </details>
@@ -133,6 +146,49 @@
       <p class="member-view-notice">个人视角只统计归属到当前成员的科目，不自动分摊共同资产、共同负债、共同收入或共同支出；投资收益为期级字段，本轮不拆分到个人。</p>
     <% } %>
   <% } %>
+</section>
+
+<section class="card">
+  <details class="metric-legend scope-panel" <%= hasScopeQuery ? "open" : "" %>>
+    <summary>
+      <span>高级设置：统计范围</span>
+      <span class="scope-count">已纳入 <%= includedScopeCount %> / <%= (scopeItems || []).length %></span>
+    </summary>
+    <p class="muted">选择趋势页纳入统计的科目；保存后会作为你的默认趋势范围，不修改录入数据。</p>
+    <% if (hasScopeQuery) { %>
+      <p class="muted">当前 URL 带有临时范围参数，点击“保存范围”后会写入你的默认偏好。</p>
+    <% } %>
+    <form method="POST" action="/trends/scope" id="trendScopeForm" class="scope-form">
+      <input type="hidden" name="view" value="<%= viewMode %>">
+      <% if (viewMode === "member") { %>
+        <input type="hidden" name="member_id" value="<%= selectedMemberId %>">
+      <% } %>
+      <input type="hidden" name="excluded_item_ids" id="scopeExcludedItemIds" value="<%= excludedItemIdsParam %>">
+      <div class="scope-actions">
+        <button type="button" class="btn-ghost" id="scopeSelectAll">全部纳入</button>
+        <button type="button" class="btn-ghost" id="scopeClearAll">全部排除</button>
+        <button type="submit" class="btn-ghost" name="scope_action" value="reset">恢复全部纳入</button>
+        <button type="submit" name="scope_action" value="save">保存范围</button>
+      </div>
+      <div class="scope-grid">
+        <% (scopeItems || []).forEach((item) => { %>
+          <% const isIncluded = !excludedSet.has(Number(item.id)); %>
+          <label class="scope-item <%= isIncluded ? "" : "scope-item-excluded" %>">
+            <input
+              type="checkbox"
+              class="scope-item-checkbox"
+              data-item-id="<%= item.id %>"
+              <%= isIncluded ? "checked" : "" %>
+            >
+            <span>
+              <strong><%= item.owner_member_name || "共同" %> / <%= item.name %></strong>
+              <small><%= kindLabel(item.kind) %><%= item.asset_group ? ` · ${assetGroupLabel(item.asset_group)}` : "" %></small>
+            </span>
+          </label>
+        <% }) %>
+      </div>
+    </form>
+  </details>
 </section>
 
 <script>
@@ -145,6 +201,48 @@
     };
     viewSelect.addEventListener("change", refreshMemberState);
     refreshMemberState();
+  })();
+</script>
+<script>
+  (() => {
+    const form = document.getElementById("trendScopeForm");
+    const hidden = document.getElementById("scopeExcludedItemIds");
+    const checkboxes = [...document.querySelectorAll(".scope-item-checkbox")];
+    if (!form || !hidden || !checkboxes.length) return;
+
+    const refreshHidden = () => {
+      const excludedIds = checkboxes.filter((input) => !input.checked).map((input) => input.dataset.itemId);
+      hidden.value = excludedIds.join(",");
+    };
+    const refreshItemState = () => {
+      checkboxes.forEach((input) => {
+        input.closest(".scope-item")?.classList.toggle("scope-item-excluded", !input.checked);
+      });
+    };
+
+    checkboxes.forEach((input) => {
+      input.addEventListener("change", () => {
+        refreshHidden();
+        refreshItemState();
+      });
+    });
+    document.getElementById("scopeSelectAll")?.addEventListener("click", () => {
+      checkboxes.forEach((input) => {
+        input.checked = true;
+      });
+      refreshHidden();
+      refreshItemState();
+    });
+    document.getElementById("scopeClearAll")?.addEventListener("click", () => {
+      checkboxes.forEach((input) => {
+        input.checked = false;
+      });
+      refreshHidden();
+      refreshItemState();
+    });
+    form.addEventListener("submit", refreshHidden);
+    refreshHidden();
+    refreshItemState();
   })();
 </script>
 

@@ -7,7 +7,7 @@
       <% if (selectedPeriod && !isCopyMode) { %>
         <p class="muted">正在编辑 <%= selectedPeriod.period_date.toISOString().slice(0, 10) %> 的历史快照。</p>
       <% } else if (isCopyMode) { %>
-        <p class="muted">已复制历史快照数据，请调整日期和金额后保存为新一期。</p>
+        <p class="muted">已复制 <%= selectedPeriod.period_date.toISOString().slice(0, 10) %> 的历史快照数据，请确认统计日期、本期投资收益和金额后保存为新一期。</p>
       <% } else { %>
         <p class="muted">录入本期各科目余额。缺少科目时，可在本页快速新增。</p>
       <% } %>
@@ -65,40 +65,81 @@
     <label>本期备注
       <input name="note" type="text" placeholder="例如：年终奖到账" value="<%= entryNote || '' %>" />
     </label>
-    <label>本期投资收益 <span class="help-tip" data-tip="填写本期投资组合盈亏，用于计算总支出与隐含支出">?</span>
-      <input name="stock_pnl_manual" type="number" step="0.01" value="<%= stockPnlManual || 0 %>" />
+    <label>本期投资收益 <button type="button" class="help-tip" data-tip="填写本期投资组合盈亏，用于计算推算总支出、隐含支出估算和投资净投入估算。若本期没有复核投资盈亏，可先填 0，但趋势提示可能提醒你复核。" aria-label="本期投资收益说明">?</button>
+      <input name="stock_pnl_manual" class="amount-input" type="number" inputmode="decimal" step="0.01" value="<%= stockPnlManual || 0 %>" />
     </label>
 
-    <% config.members.forEach((member) => { %>
-      <fieldset>
-        <legend><%= member.name %></legend>
-        <% const memberItems = config.items.filter((item) => item.owner_member_id === member.id); %>
-        <% memberItems.forEach((item) => { %>
-          <label>
-            <%= item.name %> <span class="kind-chip"><%= item.kind === "asset" ? "资产" : item.kind === "liability" ? "负债" : item.kind === "income" ? "收入" : "支出" %></span>
-            <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
-            <input name="item_<%= item.id %>" type="number" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
-          </label>
-        <% }) %>
-      </fieldset>
+    <% const entryKindGroups = [
+      { key: "asset", label: "资产" },
+      { key: "liability", label: "负债" },
+      { key: "income", label: "收入" },
+      { key: "expense", label: "支出" },
+    ]; %>
+    <% config.members.forEach((member, memberIndex) => { %>
+      <% const memberItems = config.items.filter((item) => item.owner_member_id === member.id); %>
+      <details class="entry-group" <%= memberIndex === 0 ? "open" : "" %>>
+        <summary>
+          <span><%= member.name %></span>
+          <small><%= memberItems.length %> 个科目</small>
+        </summary>
+        <div class="entry-group-body">
+          <% entryKindGroups.forEach((group) => { %>
+            <% const groupedItems = memberItems.filter((item) => item.kind === group.key); %>
+            <% if (groupedItems.length) { %>
+              <div class="entry-kind-section">
+                <h3><%= group.label %></h3>
+                <div class="entry-field-grid">
+                  <% groupedItems.forEach((item) => { %>
+                    <label>
+                      <%= item.name %> <span class="kind-chip"><%= group.label %></span>
+                      <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
+                      <input name="item_<%= item.id %>" class="amount-input" type="number" inputmode="decimal" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
+                    </label>
+                  <% }) %>
+                </div>
+              </div>
+            <% } %>
+          <% }) %>
+        </div>
+      </details>
     <% }) %>
 
-    <fieldset>
-      <legend>共同</legend>
-      <% const commonItems = config.items.filter((item) => !item.owner_member_id); %>
-      <% commonItems.forEach((item) => { %>
-        <label>
-          <%= item.name %> <span class="kind-chip"><%= item.kind === "asset" ? "资产" : item.kind === "liability" ? "负债" : item.kind === "income" ? "收入" : "支出" %></span>
-          <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
-          <input name="item_<%= item.id %>" type="number" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
-        </label>
-      <% }) %>
-    </fieldset>
+    <% const commonItems = config.items.filter((item) => !item.owner_member_id); %>
+    <details class="entry-group" <%= config.members.length === 0 ? "open" : "" %>>
+      <summary>
+        <span>共同</span>
+        <small><%= commonItems.length %> 个科目，不自动分摊到个人视角</small>
+      </summary>
+      <div class="entry-group-body">
+        <% entryKindGroups.forEach((group) => { %>
+          <% const groupedItems = commonItems.filter((item) => item.kind === group.key); %>
+          <% if (groupedItems.length) { %>
+            <div class="entry-kind-section">
+              <h3><%= group.label %></h3>
+              <div class="entry-field-grid">
+                <% groupedItems.forEach((item) => { %>
+                  <label>
+                    <%= item.name %> <span class="kind-chip"><%= group.label %></span>
+                    <% if (!item.is_active) { %><span class="badge-off">已停用</span><% } %>
+                    <input name="item_<%= item.id %>" class="amount-input" type="number" inputmode="decimal" step="0.01" value="<%= entryValues[item.id] ?? 0 %>" />
+                  </label>
+                <% }) %>
+              </div>
+            </div>
+          <% } %>
+        <% }) %>
+      </div>
+    </details>
 
-    <div class="actions">
-      <button type="submit"><%= selectedPeriod && !isCopyMode ? "保存历史快照" : "保存并查看趋势" %></button>
-      <button type="button" class="btn-ghost" id="clearEntryDraftBtn">清除草稿</button>
-      <span class="muted" id="entryDraftStatus"></span>
+    <div class="save-bar entry-save-bar">
+      <div>
+        <strong id="entryChangeSummary">尚未修改</strong>
+        <span class="muted" id="entryDraftStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div class="actions">
+        <button type="submit"><%= selectedPeriod && !isCopyMode ? "保存历史快照" : "保存并查看趋势" %></button>
+        <button type="button" class="btn-ghost" id="clearEntryDraftBtn">清除草稿</button>
+      </div>
     </div>
   </form>
 </section>
@@ -133,7 +174,13 @@
           <div class="actions">
             <a href="/entry?period_id=<%= period.id %>" class="btn-ghost">查看/编辑</a>
             <a href="/entry?copy_from=<%= period.id %>" class="btn-ghost">复制</a>
-            <form method="POST" action="/entry/periods/<%= period.id %>/delete" class="inline-delete-form">
+            <form
+              method="POST"
+              action="/entry/periods/<%= period.id %>/delete"
+              class="inline-delete-form"
+              data-period-date="<%= period.period_date.toISOString().slice(0, 10) %>"
+              data-period-note="<%= period.note || '无备注' %>"
+            >
               <button type="submit" class="btn-ghost danger">删除</button>
             </form>
           </div>

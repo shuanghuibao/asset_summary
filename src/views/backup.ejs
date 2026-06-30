@@ -28,7 +28,7 @@
     </label>
     <label class="inline-checkbox">
       <input type="checkbox" id="confirmImport" required />
-      我确认导入会覆盖当前数据
+      我确认导入会覆盖当前数据，并已按需下载当前备份
     </label>
     <button type="submit">导入并恢复</button>
   </form>
@@ -37,10 +37,30 @@
 <script>
   (() => {
     const form = document.getElementById("backupImportForm");
-    form?.addEventListener("submit", (event) => {
-      if (!confirm("导入会覆盖当前所有数据，确定继续吗？")) {
-        event.preventDefault();
+    const textarea = form?.querySelector("textarea[name='backup_json']");
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      let parsed;
+      try {
+        parsed = JSON.parse(textarea?.value || "");
+      } catch (_err) {
+        alert("备份 JSON 无法解析，请检查内容是否完整。");
+        return;
       }
+      const periods = Array.isArray(parsed.snapshotPeriods) ? parsed.snapshotPeriods : [];
+      const dates = periods.map((period) => period.period_date).filter(Boolean).sort();
+      const ok = await window.confirmDanger({
+        title: "导入覆盖当前数据",
+        message: "导入会覆盖当前成员、科目、历史快照和明细数据。",
+        details: [
+          `将导入成员 ${Array.isArray(parsed.members) ? parsed.members.length : 0} 位。`,
+          `将导入科目 ${Array.isArray(parsed.trackingItems) ? parsed.trackingItems.length : 0} 个。`,
+          `将导入快照 ${periods.length} 期${dates.length ? `，范围 ${dates[0]} 至 ${dates[dates.length - 1]}` : ""}。`,
+          "导入前请确认已经下载当前完整 JSON 备份。",
+        ],
+        confirmText: "确认导入并覆盖",
+      });
+      if (ok) form.submit();
     });
   })();
 </script>
